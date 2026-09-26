@@ -1,0 +1,40 @@
+// Android platform build for the root/system JamesDSP effect.
+//
+// This is deliberately additive: the module installs one new vendor soundfx
+// library. Device trees register its UUID in their existing audio_effects.xml;
+// no stock OnePlus/QCOM/Dirac file is replaced.
+
+cc_library_shared {
+    name: "libjamesdsp",
+    vendor: true,
+    relative_install_path: "soundfx",
+    compile_multilib: "both",
+
+    srcs: [
+        "app/src/main/cpp/libjamesdsp/Main/libjamesdsp/jni/jamesdsp/jdsp/**/*.c",
+        "app/src/main/cpp/EELStdOutExtension.c",
+        "app/src/main/cpp/hal/JamesDspHalEffect.cpp",
+    ],
+
+    local_include_dirs: [
+        "app/src/main/cpp/libjamesdsp/Main/libjamesdsp/jni/jamesdsp/jdsp",
+        "app/src/main/cpp/libjamesdsp/VeryOldOpen_source_edition/Audio_Engine/eclipse_libjamesdsp_free_bp/jni",
+        "app/src/main/cpp/hal",
+    ],
+
+    c_std: "gnu11",
+    cpp_std: "gnu++17",
+    cflags: [
+        "-O3",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-ftree-vectorize",
+        "-fvisibility=hidden",
+        "-Wno-error=implicit-function-declaration",
+        "-Wno-error=implicit-int",
+        "-Wno-error=incompatible-function-pointer-types",
+    ],
+    ldflags: ["-Wl,--gc-sections"],
+
+    shared_libs: ["liblog"],
+}
