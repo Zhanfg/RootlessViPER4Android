@@ -1,19 +1,35 @@
 #!/system/bin/sh
 # Optional full-bundle assets. Engine-only packages simply do not contain them.
 
+bundle_log() {
+  if command -v ui_print >/dev/null 2>&1; then
+    ui_print "$*"
+  else
+    echo "$*"
+  fi
+}
+
 bundle_install_apk() {
   apk="$MODPATH/JDSP-O13.apk"
   [ -s "$apk" ] || return 0
 
-  ui_print "- Full bundle: controller APK present"
+  bundle_log "- Full bundle: controller APK present"
   if command -v pm >/dev/null 2>&1; then
     if pm install -r "$apk" >/dev/null 2>&1; then
       ui_print "- Controller APK installed/updated"
     else
-      ui_print "! Controller APK auto-install failed; APK remains at $apk"
+      bundle_log "! Controller APK auto-install failed; APK remains at $apk"
+      for out in /sdcard/Download/JDSP-O13.apk /storage/emulated/0/Download/JDSP-O13.apk; do
+        parent="$(dirname "$out")"
+        [ -d "$parent" ] || continue
+        cp -fp "$apk" "$out" 2>/dev/null && {
+          bundle_log "- Controller APK copied to $out for manual install"
+          break
+        }
+      done
     fi
   else
-    ui_print "! Package manager unavailable; install $apk manually"
+    bundle_log "! Package manager unavailable; install $apk manually"
   fi
 }
 
@@ -36,10 +52,10 @@ bundle_sync_assets() {
       cp -fp "$file" "$out" 2>/dev/null || true
     done
 
-    ui_print "- Full bundle: seeded missing JamesDSP resources into $dst"
+    bundle_log "- Full bundle: seeded missing JamesDSP resources into $dst"
     return 0
   done
 
-  ui_print "! Shared storage unavailable; bundled resources remain in module"
+  bundle_log "! Shared storage unavailable; bundled resources remain in module"
   return 0
 }
