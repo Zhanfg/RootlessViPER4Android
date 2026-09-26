@@ -21,7 +21,10 @@ list_sources() {
       name="$(decoder_read_prop name "$d/source.prop")"
       version="$(decoder_read_prop version "$d/source.prop")"
       ready="$(decoder_read_prop payload_ready "$d/source.prop")"
-      echo "$id|$name|$version|ready=${ready:-0}|$d"
+      backend="$(decoder_read_prop backend "$d/source.prop")"
+      tier="$(decoder_read_prop tier "$d/source.prop")"
+      activation="$(decoder_read_prop activation "$d/source.prop")"
+      echo "$id|$name|$version|ready=${ready:-0}|backend=${backend:-unknown}|tier=${tier:-experimental}|activation=${activation:-unknown}|$d"
     done
   done
 }
