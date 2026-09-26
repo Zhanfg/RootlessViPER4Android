@@ -1,7 +1,7 @@
 name: Build fork APK
 on:
   push:
-    branches: [ master, viper-extras ]
+    branches: [ master, viper-extras, oneplus-a16-hidl ]
   workflow_dispatch:
 
 jobs:
