@@ -244,11 +244,21 @@ jobs:
           [ "$IR_BYTES" -ge 7000000 ]
           [ "$SO_BYTES" -ge 1000000 ]
 
+          CONV_COUNT="$(find "$MOD/resources/JamesDSP/Convolver" -type f | wc -l)"
+          DDC_COUNT="$(find "$MOD/resources/JamesDSP/DDC" -type f | wc -l)"
+          LIVE_COUNT="$(find "$MOD/resources/JamesDSP/Liveprog" -type f | wc -l)"
+          PREZIP_BYTES="$(du -sb "$MOD" | awk '{print $1}')"
+
           {
-            echo "OnePlus 13 Full JamesDSP bundle"
+            echo "package_kind=FULL"
+            echo "target=OnePlus13-PJZ110-Android16"
             echo "controller_apk_bytes=$APK_BYTES"
             echo "church_ir_bytes=$IR_BYTES"
             echo "aidl_engine_bytes=$SO_BYTES"
+            echo "unpacked_payload_bytes=$PREZIP_BYTES"
+            echo "convolver_files=$CONV_COUNT"
+            echo "ddc_files=$DDC_COUNT"
+            echo "liveprog_files=$LIVE_COUNT"
             echo "controller_commit=$(git -C appsrc rev-parse HEAD)"
             echo "module_commit=$(git rev-parse HEAD)"
             echo
