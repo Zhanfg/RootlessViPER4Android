@@ -4,6 +4,7 @@ LOG="$MODDIR/health.log"
 MARK="$MODDIR/.boot_pending"
 MODPATH="$MODDIR"
 . "$MODDIR/common/decoder_source.sh" 2>/dev/null || true
+[ -r "$MODDIR/common/full_bundle.sh" ] && . "$MODDIR/common/full_bundle.sh"
 
 i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$i" -lt 180 ]; do
@@ -11,6 +12,11 @@ while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$i" -lt 180 ]; do
   i=$((i + 1))
 done
 sleep 5
+
+# Retry full-bundle setup after boot in case shared storage/package manager
+# was unavailable during module installation.
+type bundle_install_apk >/dev/null 2>&1 && bundle_install_apk >/dev/null 2>&1 || true
+type bundle_sync_assets >/dev/null 2>&1 && bundle_sync_assets >/dev/null 2>&1 || true
 
 FACTORY="$(service list 2>/dev/null | grep 'android.hardware.audio.effect.IFactory/default' | head -1)"
 AUDIOSERVER="$(pidof audioserver 2>/dev/null)"
