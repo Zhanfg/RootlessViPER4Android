@@ -117,3 +117,144 @@ jobs:
         with:
           name: OnePlus13-JamesDSP-AIDL-Android16-KSU-Magisk
           path: build/OnePlus13-JamesDSP-AIDL-Android16.zip
+
+  full:
+    name: full-module
+    needs: build-arm64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout module integration
+        uses: actions/checkout@v4
+
+      - name: Download verified AIDL engine
+        uses: actions/download-artifact@v4
+        with:
+          name: OnePlus13-Android16-JamesDSP-AIDL-arm64
+          path: engine
+
+      - name: Validate downloaded engine
+        run: |
+          set -euo pipefail
+          ENGINE="$(find engine -type f -name libjamesdsp_aidl.so | head -1)"
+          [ -n "$ENGINE" ] && [ -s "$ENGINE" ]
+          BYTES="$(stat -c %s "$ENGINE")"
+          [ "$BYTES" -ge 1000000 ]
+          cp "$ENGINE" /tmp/libjamesdsp_aidl.so
+          echo "engine_bytes=$BYTES"
+
+      - name: Checkout O13 controller source
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch oneplus-integration             --recurse-submodules             https://github.com/Zhanfg/RootlessJamesDSP.git appsrc
+          git -C appsrc rev-parse HEAD
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+          cache: gradle
+          cache-dependency-path: |
+            appsrc/**/*.gradle*
+            appsrc/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Test and build O13 controller
+        working-directory: appsrc
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew testRootFdroidOneplus13UnitTest             -Poneplus13=true             --no-daemon             --stacktrace
+          ./gradlew assembleRootFdroidOneplus13             -Poneplus13=true             --no-daemon             --stacktrace
+
+      - name: Collect and audit controller
+        run: |
+          set -euo pipefail
+          APK="$(find appsrc/app/build/outputs/apk -type f             -path '*/rootFdroid/oneplus13/*'             -name '*arm64-v8a*.apk' | sort | head -1)"
+          [ -n "$APK" ] && [ -s "$APK" ]
+          APK_BYTES="$(stat -c %s "$APK")"
+          echo "controller_apk_bytes=$APK_BYTES"
+          [ "$APK_BYTES" -ge 10485760 ]
+          cp "$APK" /tmp/JDSP-O13.apk
+
+          python3 - <<'PY'
+          import zipfile
+          apk='/tmp/JDSP-O13.apk'
+          with zipfile.ZipFile(apk) as z:
+              names=set(z.namelist())
+              required=[
+                  'assets/Convolver/Church.wav',
+                  'assets/DDC/Butterworth.vdc',
+                  'assets/Liveprog/3bandSplitting.eel',
+              ]
+              missing=[x for x in required if x not in names]
+              if missing:
+                  raise SystemExit(f"missing controller assets: {missing}")
+          PY
+
+      - name: Assemble full O13 module
+        run: |
+          set -euo pipefail
+          MOD=build/full
+          OUT=build/full-out
+          rm -rf "$MOD" "$OUT"
+          mkdir -p             "$MOD/payload"             "$MOD/common"             "$MOD/decoder_sources"             "$MOD/resources/JamesDSP"             "$OUT"
+
+          cp magisk/oneplus13/module.prop              magisk/oneplus13/customize.sh              magisk/oneplus13/post-fs-data.sh              magisk/oneplus13/service.sh              magisk/oneplus13/action.sh              magisk/oneplus13/decoderctl.sh              "$MOD/"
+
+          cp magisk/oneplus13/common/patch_audio_config.sh              magisk/oneplus13/common/decoder_source.sh              magisk/oneplus13/common/full_bundle.sh              "$MOD/common/"
+
+          cp -a magisk/oneplus13/decoder_sources/. "$MOD/decoder_sources/"
+          cp /tmp/libjamesdsp_aidl.so "$MOD/payload/"
+          cp /tmp/JDSP-O13.apk "$MOD/JDSP-O13.apk"
+
+          cp -a appsrc/app/src/main/assets/Convolver "$MOD/resources/JamesDSP/"
+          cp -a appsrc/app/src/main/assets/DDC "$MOD/resources/JamesDSP/"
+          cp -a appsrc/app/src/main/assets/Liveprog "$MOD/resources/JamesDSP/"
+
+          chmod 0755             "$MOD/customize.sh"             "$MOD/post-fs-data.sh"             "$MOD/service.sh"             "$MOD/action.sh"             "$MOD/decoderctl.sh"             "$MOD/common/patch_audio_config.sh"             "$MOD/common/decoder_source.sh"             "$MOD/common/full_bundle.sh"
+
+          APK_BYTES="$(stat -c %s "$MOD/JDSP-O13.apk")"
+          IR_BYTES="$(stat -c %s "$MOD/resources/JamesDSP/Convolver/Church.wav")"
+          SO_BYTES="$(stat -c %s "$MOD/payload/libjamesdsp_aidl.so")"
+
+          [ "$APK_BYTES" -ge 10485760 ]
+          [ "$IR_BYTES" -ge 7000000 ]
+          [ "$SO_BYTES" -ge 1000000 ]
+
+          {
+            echo "OnePlus 13 Full JamesDSP bundle"
+            echo "controller_apk_bytes=$APK_BYTES"
+            echo "church_ir_bytes=$IR_BYTES"
+            echo "aidl_engine_bytes=$SO_BYTES"
+            echo "controller_commit=$(git -C appsrc rev-parse HEAD)"
+            echo "module_commit=$(git rev-parse HEAD)"
+            echo
+            echo "Large files:"
+            find "$MOD" -type f -printf '%s %p\n' | sort -nr | head -30
+          } | tee "$MOD/CONTENTS.txt"
+
+          (
+            cd "$MOD"
+            sha256sum               JDSP-O13.apk               payload/libjamesdsp_aidl.so               resources/JamesDSP/Convolver/Church.wav               > SHA256SUMS
+            zip -9 -r "../full-out/JDSP-O13-Full.zip" .
+          )
+
+          FULL_BYTES="$(stat -c %s "$OUT/JDSP-O13-Full.zip")"
+          echo "full_zip_bytes=$FULL_BYTES"
+          unzip -l "$OUT/JDSP-O13-Full.zip" | tee "$OUT/ZIP-CONTENTS.txt"
+
+          for required in             JDSP-O13.apk             payload/libjamesdsp_aidl.so             resources/JamesDSP/Convolver/Church.wav             resources/JamesDSP/DDC/Butterworth.vdc             resources/JamesDSP/Liveprog/3bandSplitting.eel             common/decoder_source.sh             common/full_bundle.sh             decoderctl.sh; do
+            grep -q "$required" "$OUT/ZIP-CONTENTS.txt"
+          done
+
+          cp "$MOD/CONTENTS.txt" "$OUT/"
+          cp "$MOD/SHA256SUMS" "$OUT/"
+
+      - name: Upload full O13 module
+        uses: actions/upload-artifact@v4
+        with:
+          name: JDSP-O13-Full
+          path: build/full-out/
+          if-no-files-found: error
+          retention-days: 90
