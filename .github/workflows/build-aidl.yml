@@ -84,6 +84,7 @@ jobs:
       - name: Validate decoder source packages
         run: |
           bash -n magisk/oneplus13/common/decoder_source.sh
+          bash -n magisk/oneplus13/decoderctl.sh
           bash -n scripts/validate_decoder_sources.sh
           bash scripts/validate_decoder_sources.sh
 
@@ -105,6 +106,7 @@ jobs:
           (cd "$MOD" && zip -qr ../OnePlus13-JamesDSP-AIDL-Android16.zip .)
           unzip -l build/OnePlus13-JamesDSP-AIDL-Android16.zip | tee build/module-files.txt
           grep -q 'common/decoder_source.sh' build/module-files.txt
+          grep -q 'decoderctl.sh' build/module-files.txt
           grep -q 'decoder_sources/README.md' build/module-files.txt
           grep -q 'decoder_sources/ffmpeg-c2/source.prop' build/module-files.txt
           grep -q 'decoder_sources/ffmpeg-c2/build.recipe' build/module-files.txt
