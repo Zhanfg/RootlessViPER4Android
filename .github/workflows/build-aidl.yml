@@ -97,11 +97,11 @@ jobs:
           cp build/artifact/libjamesdsp_aidl.so "$MOD/payload/"
           cp magisk/oneplus13/module.prop magisk/oneplus13/customize.sh \
              magisk/oneplus13/post-fs-data.sh magisk/oneplus13/service.sh \
-             magisk/oneplus13/action.sh "$MOD/"
+             magisk/oneplus13/action.sh magisk/oneplus13/decoderctl.sh "$MOD/"
           cp magisk/oneplus13/common/patch_audio_config.sh              magisk/oneplus13/common/decoder_source.sh "$MOD/common/"
           cp -a magisk/oneplus13/decoder_sources/. "$MOD/decoder_sources/"
           chmod 0755 "$MOD/customize.sh" "$MOD/post-fs-data.sh" \
-                     "$MOD/service.sh" "$MOD/action.sh" \
+                     "$MOD/service.sh" "$MOD/action.sh" "$MOD/decoderctl.sh" \
                      "$MOD/common/patch_audio_config.sh"                      "$MOD/common/decoder_source.sh"
           cp build/artifact/SHA256SUMS "$MOD/ENGINE_SHA256SUMS"
           (cd "$MOD" && zip -qr ../OnePlus13-JamesDSP-AIDL-Android16.zip .)
