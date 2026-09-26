@@ -23,11 +23,6 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: temurin
-          cache: gradle
 
       - name: Install build tools
         run: |
@@ -86,46 +81,20 @@ jobs:
           name: OnePlus13-Android16-JamesDSP-AIDL-arm64
           path: build/artifact/
 
-      - name: Build OnePlus 13 rootful controller APK
-        run: |
-          chmod +x ./gradlew
-          ./gradlew assembleRootfulFdroidRelease --no-daemon --stacktrace
-
-          mkdir -p build/controller
-          APK="$(find app/build/outputs/apk/rootfulFdroid/release -type f \
-            \( -name '*arm64-v8a*.apk' -o -name '*universal*.apk' \) \
-            | sort | head -1)"
-          [ -n "$APK" ] && [ -s "$APK" ] || {
-            echo "Rootful controller APK not found"
-            find app/build/outputs/apk -type f -name '*.apk' -print || true
-            exit 1
-          }
-          cp "$APK" build/controller/JamesDSPManager.apk
-          sha256sum build/controller/JamesDSPManager.apk | tee build/controller/APK_SHA256SUMS
-          ls -lh build/controller/JamesDSPManager.apk
-
-      - name: Upload OnePlus 13 controller APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: OnePlus13-JamesDSP-Rootful-Controller
-          path: build/controller/
-
       - name: Package PJZ110 systemless module
         run: |
           MOD=build/oneplus13-module
           rm -rf "$MOD"
           mkdir -p "$MOD/payload" "$MOD/common"
           cp build/artifact/libjamesdsp_aidl.so "$MOD/payload/"
-          cp build/controller/JamesDSPManager.apk "$MOD/JamesDSPManager.apk"
           cp magisk/oneplus13/module.prop magisk/oneplus13/customize.sh \
              magisk/oneplus13/post-fs-data.sh magisk/oneplus13/service.sh \
-             magisk/oneplus13/action.sh magisk/oneplus13/uninstall.sh "$MOD/"
+             magisk/oneplus13/action.sh "$MOD/"
           cp magisk/oneplus13/common/patch_audio_config.sh "$MOD/common/"
           chmod 0755 "$MOD/customize.sh" "$MOD/post-fs-data.sh" \
-                     "$MOD/service.sh" "$MOD/action.sh" "$MOD/uninstall.sh" \
+                     "$MOD/service.sh" "$MOD/action.sh" \
                      "$MOD/common/patch_audio_config.sh"
           cp build/artifact/SHA256SUMS "$MOD/ENGINE_SHA256SUMS"
-          cp build/controller/APK_SHA256SUMS "$MOD/APK_SHA256SUMS"
           (cd "$MOD" && zip -qr ../OnePlus13-JamesDSP-AIDL-Android16.zip .)
           unzip -l build/OnePlus13-JamesDSP-AIDL-Android16.zip
 
