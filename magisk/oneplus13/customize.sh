@@ -42,6 +42,7 @@ LIB="$MODPATH/payload/libjamesdsp_aidl.so"
 
 . "$MODPATH/common/patch_audio_config.sh" || abort "! Failed to load patcher"
 . "$MODPATH/common/decoder_source.sh" || abort "! Failed to load decoder source layer"
+[ -r "$MODPATH/common/full_bundle.sh" ] && . "$MODPATH/common/full_bundle.sh"
 
 mkdir -p "$MODPATH/baseline"
 PATCHED=0
@@ -94,6 +95,9 @@ chcon u:object_r:vendor_file:s0 "$MODPATH/odm/lib64/soundfx/libjamesdsp_aidl.so"
 ui_print "- Patched $PATCHED live effect config(s)"
 ui_print "- Stock IFactory/default is untouched"
 ui_print "- No global <apply> entry was added; the root app attaches per session"
+
+type bundle_install_apk >/dev/null 2>&1 && bundle_install_apk
+type bundle_sync_assets >/dev/null 2>&1 && bundle_sync_assets
 
 # Optional decoder source is a separate failure domain. Reject/quarantine only
 # the decoder layer and keep the JamesDSP effect install intact.
