@@ -30,12 +30,29 @@ if ! service list 2>/dev/null | grep -q 'android.hardware.audio.effect.IFactory/
   abort "! Stock AIDL audio effect factory is not visible; refusing to install"
 fi
 
+LEGACY_MIGRATED=0
+mkdir -p "$MODPATH/migration"
+: > "$MODPATH/migration/legacy_modules.list"
+
 for old in ainur_jamesdsp jamesdsp JamesDSP; do
   d="/data/adb/modules/$old"
   if [ -d "$d" ] && [ ! -f "$d/disable" ] && [ ! -f "$d/remove" ]; then
-    abort "! Active legacy JamesDSP module detected: $old. Disable it and reboot before installing this build."
+    ui_print "- Legacy JamesDSP detected: $old"
+    ui_print "- Staging automatic migration; old module stays mounted until reboot"
+    printf '%s\n' "$d" >> "$MODPATH/migration/legacy_modules.list"
+    touch "$d/disable" || abort "! Failed to disable legacy module for next boot: $old"
+    LEGACY_MIGRATED=$((LEGACY_MIGRATED + 1))
   fi
 done
+
+if [ "$LEGACY_MIGRATED" -gt 0 ]; then
+  touch "$MODPATH/.migration_pending"
+  ui_print "- Migration staged for $LEGACY_MIGRATED legacy module(s)"
+  ui_print "- If first-boot health checks fail, the old module will be re-enabled automatically"
+else
+  rm -f "$MODPATH/.migration_pending"
+  rm -f "$MODPATH/migration/legacy_modules.list"
+fi
 
 LIB="$MODPATH/payload/libjamesdsp_aidl.so"
 [ -s "$LIB" ] || abort "! Missing verified libjamesdsp_aidl.so; this package is not flash-ready"
