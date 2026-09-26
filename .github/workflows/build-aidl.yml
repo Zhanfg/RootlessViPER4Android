@@ -274,8 +274,13 @@ jobs:
 
           RAW_BYTES="$(du -sb "$MOD" | awk '{print $1}')"
           FULL_BYTES="$(stat -c %s "$OUT/JDSP-O13-Full.zip")"
-          echo "raw_bundle_bytes=$RAW_BYTES"
-          echo "full_zip_bytes=$FULL_BYTES"
+          {
+            echo "controller_apk_bytes=$APK_BYTES"
+            echo "raw_bundle_bytes=$RAW_BYTES"
+            echo "full_zip_bytes=$FULL_BYTES"
+            echo "controller_commit=$(git -C appsrc rev-parse HEAD)"
+            echo "module_commit=$(git rev-parse HEAD)"
+          } | tee "$OUT/SIZE-MANIFEST.txt"
 
           # Regression guard: a real full bundle must contain the controller,
           # IR/resources and AIDL engine. Compression may shrink the final ZIP,
@@ -290,6 +295,8 @@ jobs:
 
           cp "$MOD/CONTENTS.txt" "$OUT/"
           cp "$MOD/SHA256SUMS" "$OUT/"
+          grep -q '^controller_apk_bytes=' "$OUT/SIZE-MANIFEST.txt"
+          grep -q '^controller_commit=' "$OUT/SIZE-MANIFEST.txt"
 
       - name: Upload full O13 module
         uses: actions/upload-artifact@v4
