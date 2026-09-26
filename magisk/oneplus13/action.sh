@@ -31,3 +31,18 @@ logcat -d -b all -v time -t 1500 2>/dev/null |
 echo
 echo "--- module health log ---"
 cat "$MODDIR/health.log" 2>/dev/null || true
+
+echo
+echo "--- decoder source ---"
+echo "selected=$(cat /data/adb/jdsp/decoder_source.conf 2>/dev/null || echo none)"
+if [ -r "$MODDIR/decoder_state/active.source.prop" ]; then
+  cat "$MODDIR/decoder_state/active.source.prop"
+  echo "mounted:"
+  cat "$MODDIR/decoder_state/mounted.map" 2>/dev/null || true
+else
+  echo "active=none"
+fi
+echo "Codec2 stores:"
+service list 2>/dev/null | grep 'android.hardware.media.c2.IComponentStore' || true
+echo "FFmpeg/custom components:"
+dumpsys media.codec 2>/dev/null | grep -Ei 'c2\.ffmpeg|decoder' | head -120 || true
