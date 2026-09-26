@@ -33,6 +33,7 @@ endif()
 
 add_executable(rv4a-effect-service
         src/service.cpp
+        src/CompatRuntime.cpp
         fmq/EventFlag.cpp
         ${AIDL_SRC}
         ${ENGINE_SRC})
@@ -85,6 +86,7 @@ target_link_options(rv4a-effect-service PRIVATE
 # ---------------------------------------------------------------------------
 add_library(jamesdsp_aidl SHARED
         src/LibraryEntry.cpp
+        src/CompatRuntime.cpp
         fmq/EventFlag.cpp
         ${AIDL_SRC}
         ${ENGINE_SRC})
