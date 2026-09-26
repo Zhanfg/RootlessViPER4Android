@@ -13,10 +13,21 @@ bundle_install_apk() {
   apk="$MODPATH/JDSP-O13.apk"
   [ -s "$apk" ] || return 0
 
+  marker="$MODPATH/.controller_apk.sha256"
+  current_hash="$(sha256sum "$apk" 2>/dev/null | awk '{print $1}')"
+  installed_hash="$(cat "$marker" 2>/dev/null)"
+
   bundle_log "- Full bundle: controller APK present"
+
+  if [ -n "$current_hash" ] && [ "$current_hash" = "$installed_hash" ]; then
+    bundle_log "- Controller APK bundle unchanged; skipping reinstall"
+    return 0
+  fi
+
   if command -v pm >/dev/null 2>&1; then
     if pm install -r "$apk" >/dev/null 2>&1; then
-      ui_print "- Controller APK installed/updated"
+      [ -n "$current_hash" ] && printf '%s\n' "$current_hash" > "$marker"
+      bundle_log "- Controller APK installed/updated"
     else
       bundle_log "! Controller APK auto-install failed; APK remains at $apk"
       for out in /sdcard/Download/JDSP-O13.apk /storage/emulated/0/Download/JDSP-O13.apk; do
@@ -32,7 +43,6 @@ bundle_install_apk() {
     bundle_log "! Package manager unavailable; install $apk manually"
   fi
 }
-
 bundle_sync_assets() {
   src="$MODPATH/resources/JamesDSP"
   [ -d "$src" ] || return 0
