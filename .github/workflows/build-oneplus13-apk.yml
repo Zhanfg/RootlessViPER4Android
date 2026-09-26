@@ -1,0 +1,82 @@
+name: Build OnePlus 13 controller APK
+
+on:
+  push:
+    branches: [ oneplus13-a16-sm8750 ]
+    paths:
+      - 'app/**'
+      - 'codeview/**'
+      - 'hidden-api-*/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle*'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - '.github/workflows/build-oneplus13-apk.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: o13-controller-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+          cache: gradle
+
+      - name: Build rootful F-Droid release APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRootfulFdroidRelease --no-daemon --stacktrace
+
+      - name: Collect OnePlus 13 APKs
+        run: |
+          set -eux
+          mkdir -p build/o13-apk
+          find app/build/outputs/apk/rootfulFdroid/release -type f -name '*.apk' -print
+
+          ARM64="$(find app/build/outputs/apk/rootfulFdroid/release -type f -name '*arm64-v8a*.apk' | sort | head -1)"
+          UNIVERSAL="$(find app/build/outputs/apk/rootfulFdroid/release -type f -name '*universal*.apk' | sort | head -1)"
+
+          [ -n "$ARM64" ] && cp "$ARM64" build/o13-apk/JamesDSP-OnePlus13-arm64.apk
+          [ -n "$UNIVERSAL" ] && cp "$UNIVERSAL" build/o13-apk/JamesDSP-OnePlus13-universal.apk
+
+          [ -s build/o13-apk/JamesDSP-OnePlus13-arm64.apk ] || {
+            echo "arm64 APK missing"
+            exit 1
+          }
+
+          sha256sum build/o13-apk/*.apk | tee build/o13-apk/SHA256SUMS
+          du -h build/o13-apk/*
+
+      - name: APK content audit
+        run: |
+          python3 - <<'PY'
+          import zipfile, pathlib, collections
+          for apk in pathlib.Path('build/o13-apk').glob('*.apk'):
+              with zipfile.ZipFile(apk) as z:
+                  names=z.namelist()
+                  libs=[n for n in names if n.startswith('lib/') and n.endswith('.so')]
+                  abis=sorted({n.split('/')[1] for n in libs})
+                  assets=[n for n in names if n.startswith('assets/')]
+                  print(apk.name)
+                  print('  size=', apk.stat().st_size)
+                  print('  abis=', ','.join(abis))
+                  print('  native_libs=', len(libs))
+                  print('  assets=', len(assets))
+                  for prefix in ('assets/Convolver/','assets/DDC/','assets/Liveprog/'):
+                      print(' ', prefix, sum(n.startswith(prefix) for n in names))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OnePlus13-JamesDSP-Controller-APK
+          path: build/o13-apk/
