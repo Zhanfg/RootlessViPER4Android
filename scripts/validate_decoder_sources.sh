@@ -16,11 +16,18 @@ for dir in "$ROOT"/*; do
   abi="$(getp abi)"
   backend="$(getp backend)"
   ready="$(getp payload_ready)"
+  tier="$(getp tier)"
+  activation="$(getp activation)"
 
   [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad id: $id"; fail=1; }
   [[ "$abi" == "arm64-v8a" ]] || { echo "$id: unsupported abi $abi"; fail=1; }
   [[ "$backend" =~ ^codec2-(service|apex|library)$ ]] || { echo "$id: bad backend $backend"; fail=1; }
   [[ "$ready" =~ ^[01]$ ]] || { echo "$id: payload_ready must be 0/1"; fail=1; }
+  [[ "$tier" =~ ^(stable|experimental)$ ]] || { echo "$id: tier must be stable/experimental"; fail=1; }
+  if [[ "$backend" == "codec2-service" && "$tier" != "experimental" ]]; then
+    echo "$id: codec2-service backend cannot be stable"
+    fail=1
+  fi
 
   while IFS='|' read -r rel target mode; do
     [[ -z "$rel" || "$rel" == #* ]] && continue
