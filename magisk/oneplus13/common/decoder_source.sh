@@ -175,12 +175,28 @@ decoder_stage_source() {
   return 0
 }
 
+decoder_unstage_active() {
+  [ -d "$DECODER_STATE_DIR" ] || return 0
+
+  if [ -r "$DECODER_STATE_DIR/mounted.map" ]; then
+    while IFS='|' read -r target staged; do
+      [ -n "$staged" ] || continue
+      case "$staged" in
+        "$MODPATH"/*) rm -f "$staged" 2>/dev/null || true ;;
+      esac
+    done < "$DECODER_STATE_DIR/mounted.map"
+  fi
+
+  rm -rf "$DECODER_STATE_DIR"
+  return 0
+}
+
 decoder_install_selected_source() {
   id="$(decoder_source_selected_id)"
   case "$id" in
     ""|none|off|disabled)
       decoder_log "no custom decoder source selected"
-      rm -rf "$DECODER_STATE_DIR"
+      decoder_unstage_active
       return 0
       ;;
   esac
@@ -197,6 +213,7 @@ decoder_install_selected_source() {
 
   decoder_log "validating source $id"
   decoder_validate_source "$srcdir" || return $?
+  decoder_unstage_active
   decoder_stage_source "$srcdir" || return $?
   return 0
 }
