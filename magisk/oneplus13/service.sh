@@ -30,6 +30,15 @@ HOUT="$AUDIOHAL"; [ -n "$HOUT" ] || HOUT=missing
   echo "factory=$FOUT"
   echo "audioserver=$AOUT"
   echo "audiohalservice.qti=$HOUT"
+  if [ -s "$MODDIR/JDSP-O13.apk" ]; then
+    echo "bundle=full"
+    echo "controller_apk_bytes=$(stat -c %s "$MODDIR/JDSP-O13.apk" 2>/dev/null || echo unknown)"
+    echo "convolver_files=$(find "$MODDIR/resources/JamesDSP/Convolver" -type f 2>/dev/null | wc -l)"
+    echo "ddc_files=$(find "$MODDIR/resources/JamesDSP/DDC" -type f 2>/dev/null | wc -l)"
+    echo "liveprog_files=$(find "$MODDIR/resources/JamesDSP/Liveprog" -type f 2>/dev/null | wc -l)"
+  else
+    echo "bundle=engine-only"
+  fi
   echo "registration:"
   grep -i 'f27317f4-c984-4de6-9a90-545759495bf2\|libjamesdsp_aidl.so' \
     /odm/etc/audio_effects_config.xml \
