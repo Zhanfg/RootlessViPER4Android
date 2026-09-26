@@ -97,9 +97,10 @@ ui_print "- No global <apply> entry was added; the root app attaches per session
 
 # Optional decoder source is a separate failure domain. Reject/quarantine only
 # the decoder layer and keep the JamesDSP effect install intact.
-if ! decoder_install_selected_source; then
-  rc=$?
-  ui_print "! Decoder source rejected (code $rc); JamesDSP install continues"
+decoder_install_selected_source
+decoder_rc=$?
+if [ "$decoder_rc" -ne 0 ]; then
+  ui_print "! Decoder source rejected (code $decoder_rc); JamesDSP install continues"
   decoder_quarantine_active
 fi
 
