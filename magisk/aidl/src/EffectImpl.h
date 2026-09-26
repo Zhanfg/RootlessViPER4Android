@@ -26,7 +26,9 @@ namespace aidl::android::hardware::audio::effect {
 
 using ::android::AidlMessageQueue;
 using ::aidl::android::hardware::common::fmq::SynchronizedReadWrite;
+using ::aidl::android::media::audio::common::AudioChannelLayout;
 using ::aidl::android::media::audio::common::AudioUuid;
+using ::aidl::android::media::audio::common::PcmType;
 
 static const AudioUuid kEffectUuid = {
     static_cast<int32_t>(0xf27317f4), 0xc984, 0x4de6, 0x9a90,
@@ -36,6 +38,24 @@ static const AudioUuid kEffectType = {
     {0x12, 0x34, 0x59, 0x49, 0x5a, 0xb2}};
 
 static constexpr int kBlock = 4096;
+
+static int channelCount(const AudioChannelLayout& layout) {
+    int32_t mask = 0;
+    switch (layout.getTag()) {
+        case AudioChannelLayout::indexMask:
+            mask = layout.get<AudioChannelLayout::indexMask>();
+            break;
+        case AudioChannelLayout::layoutMask:
+            mask = layout.get<AudioChannelLayout::layoutMask>();
+            break;
+        case AudioChannelLayout::voiceMask:
+            mask = layout.get<AudioChannelLayout::voiceMask>();
+            break;
+        default:
+            return 0;
+    }
+    return __builtin_popcount(static_cast<uint32_t>(mask));
+}
 
 class Rv4aEffect : public BnEffect {
   public:
@@ -70,8 +90,32 @@ class Rv4aEffect : public BnEffect {
         std::lock_guard lock(mMutex);
         if (mState != State::INIT) return ok();
 
-        const int nextRate = common.input.base.sampleRate > 0
-                                 ? common.input.base.sampleRate : 48000;
+        if (common.input.base.sampleRate <= 0 ||
+            common.input.base.sampleRate != common.output.base.sampleRate) {
+            LOG(ERROR) << "jdsp-o13: invalid/mismatched sample rate "
+                       << common.input.base.sampleRate << " -> "
+                       << common.output.base.sampleRate;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        if (common.input.base.format.pcm != PcmType::FLOAT_32_BIT ||
+            common.output.base.format.pcm != PcmType::FLOAT_32_BIT) {
+            LOG(ERROR) << "jdsp-o13: AIDL effect FMQ must be FLOAT_32_BIT";
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        const int inputChannels = channelCount(common.input.base.channelMask);
+        const int outputChannels = channelCount(common.output.base.channelMask);
+        if (inputChannels != 2 || outputChannels != 2) {
+            // JamesDSP is a stereo engine. Never reinterpret 5.1/7.1/spatial
+            // buffers as stereo: rejecting is safer than corrupting the frame
+            // stride and producing a burst of full-scale noise.
+            LOG(WARNING) << "jdsp-o13: refusing non-stereo effect context in="
+                         << inputChannels << " out=" << outputChannels;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        const int nextRate = common.input.base.sampleRate;
         {
             std::lock_guard dspLock(mDspMutex);
             if (nextRate != mSampleRate) {
@@ -82,7 +126,7 @@ class Rv4aEffect : public BnEffect {
             }
         }
 
-        mChannels = 2;
+        mChannels = inputChannels;
         const size_t frames = common.input.frameCount > 0
                                   ? common.input.frameCount : kBlock;
         const size_t samples = frames * mChannels;
@@ -268,7 +312,14 @@ class Rv4aEffect : public BnEffect {
             IEffect::Status st{wrote ? STATUS_OK : STATUS_INVALID_OPERATION,
                                static_cast<int>(samples),
                                static_cast<int>(wrote ? samples : 0)};
-            mStatusMQ->write(&st, 1);
+            // A full one-entry status queue means the framework has not yet
+            // consumed the previous result. Give it a bounded chance instead
+            // of silently dropping the status and desynchronising FMQ pacing.
+            if (!mStatusMQ->writeBlocking(&st, 1, 20'000'000 /* 20 ms */)) {
+                LOG(WARNING) << "jdsp-o13: status FMQ blocked; stopping worker";
+                mRunning.store(false);
+                break;
+            }
         }
     }
 
