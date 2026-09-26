@@ -22,6 +22,16 @@ extern "C" {
 #include "jdsp_header.h"
 }
 
+/* Legacy EEL headers export min/max as preprocessor macros. They break C++
+ * standard-library calls such as std::min and std::max in the AIDL wrapper.
+ * Keep the legacy macros contained to the DSP C sources. */
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+
 namespace aidl::android::hardware::audio::effect {
 
 using ::android::AidlMessageQueue;
