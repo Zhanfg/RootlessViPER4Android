@@ -2,6 +2,8 @@
 MODDIR="$(dirname "$0")"
 LOG="$MODDIR/health.log"
 MARK="$MODDIR/.boot_pending"
+MODPATH="$MODDIR"
+. "$MODDIR/common/decoder_source.sh" 2>/dev/null || true
 
 i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$i" -lt 180 ]; do
@@ -37,6 +39,23 @@ if [ -z "$FACTORY" ] || [ -z "$AUDIOSERVER" ] || [ -z "$AUDIOHAL" ]; then
   echo "Critical stock audio service missing; disabling module for next boot" >> "$LOG"
   touch "$MODDIR/disable"
   exit 0
+fi
+
+if [ -r "$MODDIR/decoder_state/active.source.prop" ]; then
+  {
+    echo "decoder source:"
+    cat "$MODDIR/decoder_state/active.source.prop" 2>/dev/null
+    echo "codec2 stores:"
+    service list 2>/dev/null | grep 'android.hardware.media.c2.IComponentStore' || true
+  } >> "$LOG" 2>&1
+
+  if ! decoder_health_check_active; then
+    echo "Decoder source health failed; quarantining decoder layer only" >> "$LOG"
+    decoder_quarantine_active
+    echo "Decoder source removed from next boot; JamesDSP remains enabled" >> "$LOG"
+  else
+    echo "Decoder source healthy" >> "$LOG"
+  fi
 fi
 
 if logcat -d -b all -v brief -t 1200 2>/dev/null |
