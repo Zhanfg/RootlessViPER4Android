@@ -8,13 +8,16 @@ MANUFACTURER="$(getprop ro.product.manufacturer)"
 MODEL="$(getprop ro.product.model)"
 DEVICE="$(getprop ro.product.device)"
 BOARD="$(getprop ro.product.board)"
+PLATFORM="$(getprop ro.board.platform)"
 SDK="$(getprop ro.build.version.sdk)"
 
 [ "$ARCH" = "arm64" ] || abort "! arm64 only"
 [ "$MANUFACTURER" = "OnePlus" ] || abort "! Target manufacturer mismatch: $MANUFACTURER"
 [ "$MODEL" = "PJZ110" ] || abort "! Target model mismatch: $MODEL"
 [ "$DEVICE" = "OP5D0DL1" ] || abort "! Target device mismatch: $DEVICE"
-[ "$BOARD" = "sun" ] || abort "! Target board mismatch: $BOARD"
+if [ "$BOARD" != "sun" ] && [ "$PLATFORM" != "sun" ]; then
+  abort "! Target board/platform mismatch: board=$BOARD platform=$PLATFORM"
+fi
 [ "$SDK" = "36" ] || abort "! Android 16 / API 36 required; got API $SDK"
 
 for old in ainur_jamesdsp jamesdsp JamesDSP; do
