@@ -2,8 +2,6 @@
 MODDIR="$(dirname "$0")"
 LOG="$MODDIR/health.log"
 MARK="$MODDIR/.boot_pending"
-CTRL_PKG="com.alienware377.viper4android.rootful"
-CTRL_APK="$MODDIR/JamesDSPManager.apk"
 
 i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$i" -lt 180 ]; do
@@ -11,31 +9,6 @@ while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$i" -lt 180 ]; do
   i=$((i + 1))
 done
 sleep 5
-
-# Install/update the bundled rootful controller after Android has finished booting.
-# Keep the APK in the module so the controller version always matches the engine.
-if [ -s "$CTRL_APK" ]; then
-  INSTALLED_APK="$(pm path "$CTRL_PKG" 2>/dev/null | sed -n 's/^package://p' | head -1)"
-  NEED_INSTALL=1
-  if [ -n "$INSTALLED_APK" ] && [ -r "$INSTALLED_APK" ]; then
-    BUNDLED_SHA="$(sha256sum "$CTRL_APK" 2>/dev/null | awk '{print $1}')"
-    INSTALLED_SHA="$(sha256sum "$INSTALLED_APK" 2>/dev/null | awk '{print $1}')"
-    [ -n "$BUNDLED_SHA" ] && [ "$BUNDLED_SHA" = "$INSTALLED_SHA" ] && NEED_INSTALL=0
-  fi
-
-  if [ "$NEED_INSTALL" -eq 1 ]; then
-    TMP_APK="/data/local/tmp/oneplus13-jdsp-controller.apk"
-    cp -f "$CTRL_APK" "$TMP_APK"
-    chmod 0644 "$TMP_APK"
-    OUT="$(cmd package install -r -g "$TMP_APK" 2>&1)"
-    RC=$?
-    rm -f "$TMP_APK"
-    {
-      echo "controller_install_rc=$RC"
-      echo "$OUT"
-    } >> "$LOG"
-  fi
-fi
 
 FACTORY="$(service list 2>/dev/null | grep 'android.hardware.audio.effect.IFactory/default' | head -1)"
 AUDIOSERVER="$(pidof audioserver 2>/dev/null)"
