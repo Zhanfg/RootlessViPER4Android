@@ -34,6 +34,20 @@ LEGACY_MIGRATED=0
 mkdir -p "$MODPATH/migration"
 : > "$MODPATH/migration/legacy_modules.list"
 
+restore_legacy_install() {
+  list="$MODPATH/migration/legacy_modules.list"
+  [ -r "$list" ] || return 0
+
+  while IFS= read -r legacy; do
+    case "$legacy" in /data/adb/modules/*) ;; *) continue ;; esac
+    [ -d "$legacy" ] || continue
+    rm -f "$legacy/disable"
+    ui_print "- Restored legacy module after install failure: $(basename "$legacy")"
+  done < "$list"
+
+  rm -f "$MODPATH/.migration_pending"
+}
+
 for old in ainur_jamesdsp jamesdsp JamesDSP; do
   d="/data/adb/modules/$old"
   if [ -d "$d" ] && [ ! -f "$d/disable" ] && [ ! -f "$d/remove" ]; then
@@ -55,10 +69,19 @@ else
 fi
 
 LIB="$MODPATH/payload/libjamesdsp_aidl.so"
-[ -s "$LIB" ] || abort "! Missing verified libjamesdsp_aidl.so; this package is not flash-ready"
+if [ ! -s "$LIB" ]; then
+  restore_legacy_install
+  abort "! Missing verified libjamesdsp_aidl.so; this package is not flash-ready"
+fi
 
-. "$MODPATH/common/patch_audio_config.sh" || abort "! Failed to load patcher"
-. "$MODPATH/common/decoder_source.sh" || abort "! Failed to load decoder source layer"
+if ! . "$MODPATH/common/patch_audio_config.sh"; then
+  restore_legacy_install
+  abort "! Failed to load patcher"
+fi
+if ! . "$MODPATH/common/decoder_source.sh"; then
+  restore_legacy_install
+  abort "! Failed to load decoder source layer"
+fi
 [ -r "$MODPATH/common/full_bundle.sh" ] && . "$MODPATH/common/full_bundle.sh"
 
 mkdir -p "$MODPATH/baseline"
@@ -73,10 +96,16 @@ patch_one() {
   dst="$MODPATH/$rel"
   mkdir -p "$(dirname "$dst")"
 
+  if [ "$LEGACY_MIGRATED" -gt 0 ]; then
+    JDSP_ALLOW_LEGACY_MIGRATION=1
+  else
+    JDSP_ALLOW_LEGACY_MIGRATION=0
+  fi
+
   patch_jdsp_audio_config "$src" "$dst"
   rc=$?
   case "$rc" in
-    0|10)
+    0|10|11)
       ui_print "- Patched $src"
       cp -fp "$src" "$MODPATH/baseline/$tag.before.xml"
       sha256sum "$src" > "$MODPATH/baseline/$tag.before.sha256" 2>/dev/null || true
@@ -84,6 +113,7 @@ patch_one() {
       PATCHED=$((PATCHED + 1))
       ;;
     *)
+      restore_legacy_install
       abort "! Refusing unsafe patch for $src (code $rc)"
       ;;
   esac
@@ -95,10 +125,16 @@ patch_one /odm/etc/audio_effects_config.xml   odm/etc/audio_effects_config.xml o
 
 patch_one /vendor/etc/audio/sku_sun/audio_effects_config.xml   system/vendor/etc/audio/sku_sun/audio_effects_config.xml vendor_sku_sun
 
-[ "$PATCHED" -gt 0 ] || abort "! No supported OnePlus 13 AIDL audio effect config found"
+if [ "$PATCHED" -le 0 ]; then
+  restore_legacy_install
+  abort "! No supported OnePlus 13 AIDL audio effect config found"
+fi
 
 mkdir -p "$MODPATH/odm/lib64/soundfx"
-mv "$LIB" "$MODPATH/odm/lib64/soundfx/libjamesdsp_aidl.so"
+if ! mv "$LIB" "$MODPATH/odm/lib64/soundfx/libjamesdsp_aidl.so"; then
+  restore_legacy_install
+  abort "! Failed to stage libjamesdsp_aidl.so"
+fi
 rm -rf "$MODPATH/payload"
 
 set_perm "$MODPATH/odm/lib64/soundfx/libjamesdsp_aidl.so" 0 0 0644
