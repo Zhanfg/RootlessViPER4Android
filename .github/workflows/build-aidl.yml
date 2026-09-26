@@ -77,3 +77,26 @@ jobs:
         with:
           name: OnePlus13-Android16-JamesDSP-AIDL-arm64
           path: build/artifact/
+
+      - name: Package PJZ110 systemless module
+        run: |
+          MOD=build/oneplus13-module
+          rm -rf "$MOD"
+          mkdir -p "$MOD/payload" "$MOD/common"
+          cp build/artifact/libjamesdsp_aidl.so "$MOD/payload/"
+          cp magisk/oneplus13/module.prop magisk/oneplus13/customize.sh \
+             magisk/oneplus13/post-fs-data.sh magisk/oneplus13/service.sh \
+             magisk/oneplus13/action.sh "$MOD/"
+          cp magisk/oneplus13/common/patch_audio_config.sh "$MOD/common/"
+          chmod 0755 "$MOD/customize.sh" "$MOD/post-fs-data.sh" \
+                     "$MOD/service.sh" "$MOD/action.sh" \
+                     "$MOD/common/patch_audio_config.sh"
+          cp build/artifact/SHA256SUMS "$MOD/ENGINE_SHA256SUMS"
+          (cd "$MOD" && zip -qr ../OnePlus13-JamesDSP-AIDL-Android16.zip .)
+          unzip -l build/OnePlus13-JamesDSP-AIDL-Android16.zip
+
+      - name: Upload PJZ110 Android 16 module
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnePlus13-JamesDSP-AIDL-Android16-KSU-Magisk
+          path: build/OnePlus13-JamesDSP-AIDL-Android16.zip
