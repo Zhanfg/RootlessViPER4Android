@@ -15,9 +15,15 @@ sleep 5
 # Install/update the bundled rootful controller after Android has finished booting.
 # Keep the APK in the module so the controller version always matches the engine.
 if [ -s "$CTRL_APK" ]; then
-  INSTALLED_VER="$(dumpsys package "$CTRL_PKG" 2>/dev/null | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | head -1)"
-  APK_VER="$(aapt dump badging "$CTRL_APK" 2>/dev/null | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p" | head -1)"
-  if [ -z "$INSTALLED_VER" ] || [ -z "$APK_VER" ] || [ "$INSTALLED_VER" != "$APK_VER" ]; then
+  INSTALLED_APK="$(pm path "$CTRL_PKG" 2>/dev/null | sed -n 's/^package://p' | head -1)"
+  NEED_INSTALL=1
+  if [ -n "$INSTALLED_APK" ] && [ -r "$INSTALLED_APK" ]; then
+    BUNDLED_SHA="$(sha256sum "$CTRL_APK" 2>/dev/null | awk '{print $1}')"
+    INSTALLED_SHA="$(sha256sum "$INSTALLED_APK" 2>/dev/null | awk '{print $1}')"
+    [ -n "$BUNDLED_SHA" ] && [ "$BUNDLED_SHA" = "$INSTALLED_SHA" ] && NEED_INSTALL=0
+  fi
+
+  if [ "$NEED_INSTALL" -eq 1 ]; then
     TMP_APK="/data/local/tmp/oneplus13-jdsp-controller.apk"
     cp -f "$CTRL_APK" "$TMP_APK"
     chmod 0644 "$TMP_APK"
