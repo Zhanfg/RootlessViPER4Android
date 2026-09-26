@@ -45,7 +45,7 @@ static effect_descriptor_t rv4a_descriptor =
     { 0xf98765f4, 0xc321, 0x5de6, 0x9a45, { 0x12, 0x34, 0x59, 0x49, 0x5a, 0xb2 } },
     { 0xf27317f4, 0xc984, 0x4de6, 0x9a90, { 0x54, 0x57, 0x59, 0x49, 0x5b, 0xf2 } },
     EFFECT_CONTROL_API_VERSION,
-    EFFECT_FLAG_TYPE_INSERT | EFFECT_FLAG_INSERT_FIRST,
+    EFFECT_FLAG_TYPE_INSERT | EFFECT_FLAG_INSERT_LAST,
     10,
     1,
     "RootlessViPER4Android engine",
