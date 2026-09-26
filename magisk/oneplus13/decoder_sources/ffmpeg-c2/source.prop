@@ -1,6 +1,6 @@
 id=ffmpeg-c2
 name=FFmpeg Codec2 external store
-version=android-17.0-ref
+version=android-16.0-ref
 backend=codec2-service
 abi=arm64-v8a
 android_min=36
@@ -10,4 +10,4 @@ expected_components=c2.ffmpeg.aac.decoder,c2.ffmpeg.ac3.decoder,c2.ffmpeg.alac.d
 allow_replace=0
 payload_ready=0
 upstream=raspberry-vanilla/android_external_ffmpeg_codec2
-upstream_ref=android-17.0
+upstream_ref=android-16.0
