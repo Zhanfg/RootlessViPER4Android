@@ -115,7 +115,7 @@ jobs:
       - name: Upload PJZ110 Android 16 module
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus13-JamesDSP-AIDL-Android16-KSU-Magisk
+          name: OnePlus13-JamesDSP-AIDL-EngineOnly-Android16-KSU-Magisk
           path: build/OnePlus13-JamesDSP-AIDL-Android16.zip
 
   full:
@@ -240,8 +240,16 @@ jobs:
             zip -9 -r "../full-out/JDSP-O13-Full.zip" .
           )
 
+          RAW_BYTES="$(du -sb "$MOD" | awk '{print $1}')"
           FULL_BYTES="$(stat -c %s "$OUT/JDSP-O13-Full.zip")"
+          echo "raw_bundle_bytes=$RAW_BYTES"
           echo "full_zip_bytes=$FULL_BYTES"
+
+          # Regression guard: a real full bundle must contain the controller,
+          # IR/resources and AIDL engine. Compression may shrink the final ZIP,
+          # but the uncompressed bundle must remain in the ~30 MB class.
+          [ "$RAW_BYTES" -ge 30000000 ]
+          [ "$FULL_BYTES" -ge 15000000 ]
           unzip -l "$OUT/JDSP-O13-Full.zip" | tee "$OUT/ZIP-CONTENTS.txt"
 
           for required in             JDSP-O13.apk             payload/libjamesdsp_aidl.so             resources/JamesDSP/Convolver/Church.wav             resources/JamesDSP/DDC/Butterworth.vdc             resources/JamesDSP/Liveprog/3bandSplitting.eel             common/decoder_source.sh             common/full_bundle.sh             decoderctl.sh; do
@@ -254,7 +262,7 @@ jobs:
       - name: Upload full O13 module
         uses: actions/upload-artifact@v4
         with:
-          name: JDSP-O13-Full
+          name: JDSP-O13-Full-Android16-KSU-Magisk
           path: build/full-out/
           if-no-files-found: error
           retention-days: 90
