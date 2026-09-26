@@ -73,3 +73,46 @@ target_link_libraries(rv4a-effect-service ${log-lib} ${binder-lib})
 # the service logs and exits if registration ever comes back unresolved.
 target_link_options(rv4a-effect-service PRIVATE
         -Wl,--unresolved-symbols=ignore-in-object-files)
+
+
+# ---------------------------------------------------------------------------
+# OnePlus 13 / SM8750: loadable AIDL effect library.
+#
+# ColorOS 16 already provides android.hardware.audio.effect.IFactory/default.
+# The QTI factory loads individual effect libraries from audio_effects_config.xml
+# via dlopen, so do not replace the factory service. Export the three AOSP
+# effect-library entry points from a shared object instead.
+# ---------------------------------------------------------------------------
+add_library(jamesdsp_aidl SHARED
+        src/LibraryEntry.cpp
+        fmq/EventFlag.cpp
+        ${AIDL_SRC}
+        ${ENGINE_SRC})
+
+target_include_directories(jamesdsp_aidl PRIVATE
+        ${GEN}/include
+        fmq/include
+        fmq/base
+        fmq/compat
+        compat
+        ${ENGINE}/libjamesdsp/Main/libjamesdsp/jni/jamesdsp/jdsp
+        ${ENGINE}/hal
+        ${ENGINE}/libjamesdsp/VeryOldOpen_source_edition/Audio_Engine/eclipse_libjamesdsp_free_bp/jni)
+
+target_compile_options(jamesdsp_aidl PRIVATE
+        -O3
+        -ffunction-sections
+        -fdata-sections
+        -fvisibility=hidden
+        $<$<COMPILE_LANGUAGE:C>:-std=gnu11>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-function-declaration>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-int>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=incompatible-function-pointer-types>)
+
+target_link_options(jamesdsp_aidl PRIVATE
+        -Wl,--gc-sections)
+
+target_link_libraries(jamesdsp_aidl ${log-lib} ${binder-lib})
+
+set_target_properties(jamesdsp_aidl PROPERTIES
+        OUTPUT_NAME "jamesdsp_aidl")
