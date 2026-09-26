@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -236,6 +237,16 @@ class Rv4aEffect : public BnEffect {
                 case 20000: value = static_cast<int32_t>(mDsp.blockSizeMax); break;
                 case 20001: value = mSampleRate; break;
                 case 20002: value = static_cast<int32_t>(getpid()); break;
+                // OnePlus 13 optional telemetry extension. Generic/legacy
+                // JamesDSP drivers may simply reject these queries; the
+                // controller treats that as a capability downgrade.
+                case 20010: value = mLastPeakMilliDb.load(std::memory_order_relaxed); break;
+                case 20011: value = mLastClipSamples.load(std::memory_order_relaxed); break;
+                case 20012: value = mLastProcessUs.load(std::memory_order_relaxed); break;
+                case 20013: value = mMaxProcessUs.load(std::memory_order_relaxed); break;
+                case 20014: value = mLastFrames.load(std::memory_order_relaxed); break;
+                case 20015: value = static_cast<int32_t>(
+                    mProcessedBlocks.load(std::memory_order_relaxed) & 0x7fffffffULL); break;
                 case 30000:
                 case 30001:
                 case 30002:
@@ -307,6 +318,7 @@ class Rv4aEffect : public BnEffect {
             if (!mInputMQ->read(in.data(), samples)) continue;
 
             const size_t frames = samples / static_cast<size_t>(mChannels);
+            const auto processStart = std::chrono::steady_clock::now();
             {
                 std::lock_guard dspLock(mDspMutex);
                 for (size_t off = 0; off < frames; off += kBlock) {
@@ -317,6 +329,42 @@ class Rv4aEffect : public BnEffect {
                         n);
                 }
             }
+            const auto processUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - processStart).count();
+
+            float peak = 0.0f;
+            int32_t clipped = 0;
+            for (const float sample : out) {
+                if (!std::isfinite(sample)) {
+                    ++clipped;
+                    peak = std::numeric_limits<float>::infinity();
+                    continue;
+                }
+                const float a = std::fabs(sample);
+                peak = std::max(peak, a);
+                if (a >= 1.0f) ++clipped;
+            }
+
+            int32_t peakMilliDb = -120000;
+            if (std::isfinite(peak) && peak > 0.0f) {
+                peakMilliDb = static_cast<int32_t>(
+                    std::lround(20.0 * std::log10(static_cast<double>(peak)) * 1000.0));
+            } else if (!std::isfinite(peak)) {
+                peakMilliDb = 120000;
+            }
+
+            mLastPeakMilliDb.store(peakMilliDb, std::memory_order_relaxed);
+            mLastClipSamples.store(clipped, std::memory_order_relaxed);
+            mLastProcessUs.store(static_cast<int32_t>(
+                std::min<int64_t>(processUs, INT32_MAX)), std::memory_order_relaxed);
+            int32_t previousMax = mMaxProcessUs.load(std::memory_order_relaxed);
+            const int32_t currentUs = mLastProcessUs.load(std::memory_order_relaxed);
+            while (currentUs > previousMax &&
+                   !mMaxProcessUs.compare_exchange_weak(
+                       previousMax, currentUs, std::memory_order_relaxed)) {}
+            mLastFrames.store(static_cast<int32_t>(
+                std::min<size_t>(frames, INT32_MAX)), std::memory_order_relaxed);
+            mProcessedBlocks.fetch_add(1, std::memory_order_relaxed);
 
             const bool wrote = mOutputMQ->write(out.data(), samples);
             IEffect::Status st{wrote ? STATUS_OK : STATUS_INVALID_OPERATION,
@@ -475,6 +523,13 @@ class Rv4aEffect : public BnEffect {
 
     uint32_t mParamCommits{0};
     int32_t mHashSlot[4]{0, 0, 0, 0};
+
+    std::atomic<int32_t> mLastPeakMilliDb{-120000};
+    std::atomic<int32_t> mLastClipSamples{0};
+    std::atomic<int32_t> mLastProcessUs{0};
+    std::atomic<int32_t> mMaxProcessUs{0};
+    std::atomic<int32_t> mLastFrames{0};
+    std::atomic<uint64_t> mProcessedBlocks{0};
 
     std::vector<char> mStringBuf;
     int mStringIndex{0};
