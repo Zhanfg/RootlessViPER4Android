@@ -248,6 +248,16 @@ class Rv4aEffect : public BnEffect {
                 case 20014: value = mLastFrames.load(std::memory_order_relaxed); break;
                 case 20015: value = static_cast<int32_t>(
                     mProcessedBlocks.load(std::memory_order_relaxed) & 0x7fffffffULL); break;
+                case 20016: value = mSafetyGuardEnabled.load(std::memory_order_relaxed) ? 1 : 0; break;
+                case 20017: {
+                    const float gain = std::max(
+                        1.0e-6f, mSafetyGain.load(std::memory_order_relaxed));
+                    value = static_cast<int32_t>(
+                        std::lround(20.0 * std::log10(static_cast<double>(gain)) * 1000.0));
+                    break;
+                }
+                case 20018: value = static_cast<int32_t>(
+                    mClipEvents.load(std::memory_order_relaxed) & 0x7fffffffULL); break;
                 case 30000:
                 case 30001:
                 case 30002:
@@ -353,6 +363,49 @@ class Rv4aEffect : public BnEffect {
             } else if (!std::isfinite(peak)) {
                 peakMilliDb = 120000;
             }
+
+            if (clipped > 0) {
+                mClipEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            // Optional last-resort headroom guard for the O13 AIDL path.
+            // It never mutates JamesDSP preset/post-gain state: the gain lives
+            // entirely in this wrapper and recovers smoothly after overloads.
+            float safetyGain = mSafetyGain.load(std::memory_order_relaxed);
+            if (mSafetyGuardEnabled.load(std::memory_order_relaxed)) {
+                constexpr float kTargetPeak = 0.98f;
+                constexpr float kMinGain = 0.10f;
+                float desiredGain = 1.0f;
+                if (!std::isfinite(peak)) {
+                    desiredGain = kMinGain;
+                } else if (peak > kTargetPeak) {
+                    desiredGain = std::max(kMinGain, kTargetPeak / peak);
+                }
+
+                if (desiredGain < safetyGain) {
+                    // Fast attack: prevent the next write from exceeding full scale.
+                    safetyGain = desiredGain;
+                } else {
+                    // Slow release (~2 s) to avoid pumping after a transient peak.
+                    const float dt = mSampleRate > 0
+                        ? static_cast<float>(frames) / static_cast<float>(mSampleRate)
+                        : 0.0f;
+                    const float release = std::clamp(dt / 2.0f, 0.0f, 1.0f);
+                    safetyGain += (1.0f - safetyGain) * release;
+                }
+
+                for (float& sample : out) {
+                    if (!std::isfinite(sample)) {
+                        sample = 0.0f;
+                        continue;
+                    }
+                    sample *= safetyGain;
+                    sample = std::clamp(sample, -0.9995f, 0.9995f);
+                }
+            } else {
+                safetyGain = 1.0f;
+            }
+            mSafetyGain.store(safetyGain, std::memory_order_relaxed);
 
             mLastPeakMilliDb.store(peakMilliDb, std::memory_order_relaxed);
             mLastClipSamples.store(clipped, std::memory_order_relaxed);
@@ -493,6 +546,14 @@ class Rv4aEffect : public BnEffect {
 
         if (handleBufferedPayload(id, val, p->vsize)) return true;
 
+        if (id == 1600) {
+            mSafetyGuardEnabled.store(sv != 0, std::memory_order_relaxed);
+            if (sv == 0) {
+                mSafetyGain.store(1.0f, std::memory_order_relaxed);
+            }
+            return true;
+        }
+
         if (id >= 25000 && id <= 25003) {
             if (p->vsize >= sizeof(int32_t)) {
                 mHashSlot[id - 25000] = *reinterpret_cast<const int32_t*>(val);
@@ -531,6 +592,9 @@ class Rv4aEffect : public BnEffect {
     std::atomic<int32_t> mMaxProcessUs{0};
     std::atomic<int32_t> mLastFrames{0};
     std::atomic<uint64_t> mProcessedBlocks{0};
+    std::atomic<uint64_t> mClipEvents{0};
+    std::atomic<bool> mSafetyGuardEnabled{false};
+    std::atomic<float> mSafetyGain{1.0f};
 
     std::vector<char> mStringBuf;
     int mStringIndex{0};
