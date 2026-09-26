@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <hardware/audio_effect.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <limits.h>
 
 #include "EffectParams.h"
 
@@ -58,8 +60,11 @@ struct rv4a_context
     bool configured;
     uint32_t sampleRate;
     uint32_t channels;
+    audio_format_t format;
     uint8_t outAccessMode;   /* write or accumulate */
     uint64_t blocks;         /* processed block counter, for log throttling */
+    void *accumScratch;
+    size_t accumScratchBytes;
 
     /* The app writes a checksum of each large payload it pushes (DDC,
        convolver, GraphicEQ, liveprog) and reads it back before deciding to
@@ -95,6 +100,133 @@ struct rv4a_reply_1x4_1x4
     int32_t data;
 };
 
+static size_t bytesPerStereoFrame(audio_format_t format)
+{
+    switch (format)
+    {
+    case AUDIO_FORMAT_PCM_16_BIT: return 2u * sizeof(int16_t);
+    case AUDIO_FORMAT_PCM_FLOAT:
+    case AUDIO_FORMAT_PCM_32_BIT:
+    case AUDIO_FORMAT_PCM_8_24_BIT: return 2u * sizeof(int32_t);
+    case AUDIO_FORMAT_PCM_24_BIT_PACKED: return 2u * 3u;
+    default: return 0;
+    }
+}
+
+static int16_t satAdd16(int16_t a, int16_t b)
+{
+    int32_t v = (int32_t)a + (int32_t)b;
+    if (v > INT16_MAX) v = INT16_MAX;
+    if (v < INT16_MIN) v = INT16_MIN;
+    return (int16_t)v;
+}
+
+static int32_t satAdd32(int32_t a, int32_t b)
+{
+    int64_t v = (int64_t)a + (int64_t)b;
+    if (v > INT32_MAX) v = INT32_MAX;
+    if (v < INT32_MIN) v = INT32_MIN;
+    return (int32_t)v;
+}
+
+static int32_t satAdd24(int32_t a, int32_t b)
+{
+    int64_t v = (int64_t)a + (int64_t)b;
+    if (v > 0x7fffff) v = 0x7fffff;
+    if (v < -0x800000) v = -0x800000;
+    return (int32_t)v;
+}
+
+static int32_t readPacked24Le(const uint8_t *p)
+{
+    int32_t v = (int32_t)p[0] | ((int32_t)p[1] << 8) | ((int32_t)p[2] << 16);
+    if (v & 0x800000) v |= ~0x00ffffff;
+    return v;
+}
+
+static void writePacked24Le(uint8_t *p, int32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+}
+
+static int32_t processFrames(rv4a_context *c, const void *input, void *output, size_t frames)
+{
+    switch (c->format)
+    {
+    case AUDIO_FORMAT_PCM_FLOAT:
+        c->dsp.processFloatMultiplexd(
+            &c->dsp, (float *)input, (float *)output, frames);
+        return 0;
+    case AUDIO_FORMAT_PCM_16_BIT:
+        c->dsp.processInt16Multiplexd(
+            &c->dsp, (int16_t *)input, (int16_t *)output, frames);
+        return 0;
+    case AUDIO_FORMAT_PCM_32_BIT:
+        c->dsp.processInt32Multiplexd(
+            &c->dsp, (int32_t *)input, (int32_t *)output, frames);
+        return 0;
+    case AUDIO_FORMAT_PCM_8_24_BIT:
+        c->dsp.processInt8_24Multiplexd(
+            &c->dsp, (int32_t *)input, (int32_t *)output, frames);
+        return 0;
+    case AUDIO_FORMAT_PCM_24_BIT_PACKED:
+        c->dsp.processInt24PackedMultiplexd(
+            &c->dsp, (uint8_t *)input, (uint8_t *)output, frames);
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
+static int32_t accumulateProcessed(rv4a_context *c, audio_buffer_t *out,
+                                   const void *processed, size_t frames)
+{
+    const size_t samples = frames * 2u;
+    switch (c->format)
+    {
+    case AUDIO_FORMAT_PCM_FLOAT:
+    {
+        const float *src = (const float *)processed;
+        for (size_t i = 0; i < samples; ++i) out->f32[i] += src[i];
+        return 0;
+    }
+    case AUDIO_FORMAT_PCM_16_BIT:
+    {
+        const int16_t *src = (const int16_t *)processed;
+        for (size_t i = 0; i < samples; ++i) out->s16[i] = satAdd16(out->s16[i], src[i]);
+        return 0;
+    }
+    case AUDIO_FORMAT_PCM_32_BIT:
+    {
+        const int32_t *src = (const int32_t *)processed;
+        for (size_t i = 0; i < samples; ++i) out->s32[i] = satAdd32(out->s32[i], src[i]);
+        return 0;
+    }
+    case AUDIO_FORMAT_PCM_8_24_BIT:
+    {
+        const int32_t *src = (const int32_t *)processed;
+        for (size_t i = 0; i < samples; ++i) out->s32[i] = satAdd24(out->s32[i], src[i]);
+        return 0;
+    }
+    case AUDIO_FORMAT_PCM_24_BIT_PACKED:
+    {
+        const uint8_t *src = (const uint8_t *)processed;
+        uint8_t *dst = (uint8_t *)out->raw;
+        for (size_t i = 0; i < samples; ++i)
+        {
+            const int32_t mixed = satAdd24(
+                readPacked24Le(dst + i * 3u), readPacked24Le(src + i * 3u));
+            writePacked24Le(dst + i * 3u, mixed);
+        }
+        return 0;
+    }
+    default:
+        return -EINVAL;
+    }
+}
+
 static int32_t rv4a_process(effect_handle_t self, audio_buffer_t *in, audio_buffer_t *out)
 {
     rv4a_context *c = reinterpret_cast<rv4a_context *>(self);
@@ -104,74 +236,49 @@ static int32_t rv4a_process(effect_handle_t self, audio_buffer_t *in, audio_buff
         return -EINVAL;
     }
     if (!c->active)
-        return -ENODATA;              /* convention: nothing written */
+        return -ENODATA;
     if (!c->configured)
     {
-        LOGW("process: called before SET_CONFIG, passing through");
+        LOGW("process: called before SET_CONFIG");
         return -ENODATA;
     }
 
-    /* Never read or write past the shorter of the two buffers. */
-    size_t frames = in->frameCount < out->frameCount ? in->frameCount : out->frameCount;
+    const size_t frames = in->frameCount < out->frameCount ? in->frameCount : out->frameCount;
     if (frames == 0)
         return 0;
 
-    static thread_local float *left = nullptr, *right = nullptr;
-    static thread_local size_t capacity = 0;
-    if (capacity < RV4A_BLOCK)
+    int32_t rc = 0;
+    if (c->outAccessMode == EFFECT_BUFFER_ACCESS_ACCUMULATE)
     {
-        free(left); free(right);
-        left = (float *)malloc(RV4A_BLOCK * sizeof(float));
-        right = (float *)malloc(RV4A_BLOCK * sizeof(float));
-        if (!left || !right)
+        const size_t bytesPerFrame = bytesPerStereoFrame(c->format);
+        if (bytesPerFrame == 0 || frames > SIZE_MAX / bytesPerFrame)
+            return -EINVAL;
+        const size_t needed = frames * bytesPerFrame;
+        if (c->accumScratchBytes < needed)
         {
-            free(left); free(right);
-            left = right = nullptr; capacity = 0;
-            LOGE("process: out of memory for scratch buffers");
-            return -ENOMEM;
+            void *next = realloc(c->accumScratch, needed);
+            if (!next)
+            {
+                LOGE("process: unable to grow accumulation scratch to %zu bytes", needed);
+                return -ENOMEM;
+            }
+            c->accumScratch = next;
+            c->accumScratchBytes = needed;
         }
-        capacity = RV4A_BLOCK;
-        LOGI("process: scratch buffers allocated (%d frames)", RV4A_BLOCK);
+        rc = processFrames(c, in->raw, c->accumScratch, frames);
+        if (rc == 0)
+            rc = accumulateProcessed(c, out, c->accumScratch, frames);
+    }
+    else
+    {
+        rc = processFrames(c, in->raw, out->raw, frames);
     }
 
-    const bool accumulate = (c->outAccessMode == EFFECT_BUFFER_ACCESS_ACCUMULATE);
-
-    for (size_t off = 0; off < frames; off += RV4A_BLOCK)
-    {
-        const size_t n = (frames - off) > RV4A_BLOCK ? RV4A_BLOCK : (frames - off);
-
-        for (size_t i = 0; i < n; i++)
-        {
-            left[i]  = in->f32[(off + i) * 2];
-            right[i] = in->f32[(off + i) * 2 + 1];
-        }
-
-        c->dsp.tmpBuffer[0] = left;
-        c->dsp.tmpBuffer[1] = right;
-        JamesDSPProcess(&c->dsp, n);
-
-        for (size_t i = 0; i < n; i++)
-        {
-            const size_t o = (off + i) * 2;
-            if (accumulate)
-            {
-                out->f32[o]     += left[i];
-                out->f32[o + 1] += right[i];
-            }
-            else
-            {
-                out->f32[o]     = left[i];
-                out->f32[o + 1] = right[i];
-            }
-        }
-    }
-
-    /* One line every few thousand blocks: enough to confirm audio is flowing
-       without flooding logcat on the audio thread. */
-    if ((c->blocks++ % 2000) == 0)
-        LOGD("process: alive, %zu frames, rate %u, %s", frames, c->sampleRate,
-             accumulate ? "accumulate" : "write");
-    return 0;
+    if (rc == 0 && (c->blocks++ % 2000) == 0)
+        LOGD("process: alive, %zu frames, rate %u, fmt=0x%x, %s",
+             frames, c->sampleRate, c->format,
+             c->outAccessMode == EFFECT_BUFFER_ACCESS_ACCUMULATE ? "accumulate" : "write");
+    return rc;
 }
 
 /*
@@ -345,13 +452,11 @@ static int32_t rv4a_command(effect_handle_t self, uint32_t cmdCode, uint32_t cmd
              cfg->outputCfg.samplingRate, cfg->outputCfg.format, cfg->outputCfg.channels,
              cfg->outputCfg.accessMode);
 
-        /* The engine works on planar float stereo. Anything else would be
-           misread as floats and produce noise, so refuse it loudly instead. */
-        if (cfg->inputCfg.format != AUDIO_FORMAT_PCM_FLOAT ||
-            cfg->outputCfg.format != AUDIO_FORMAT_PCM_FLOAT)
+        if (cfg->inputCfg.samplingRate == 0 ||
+            cfg->inputCfg.samplingRate != cfg->outputCfg.samplingRate)
         {
-            LOGE("SET_CONFIG: refusing non-float format (in 0x%x out 0x%x)",
-                 cfg->inputCfg.format, cfg->outputCfg.format);
+            LOGE("SET_CONFIG: refusing sample-rate mismatch (%u -> %u)",
+                 cfg->inputCfg.samplingRate, cfg->outputCfg.samplingRate);
             return -EINVAL;
         }
         if (cfg->inputCfg.channels != AUDIO_CHANNEL_OUT_STEREO ||
@@ -361,16 +466,50 @@ static int32_t rv4a_command(effect_handle_t self, uint32_t cmdCode, uint32_t cmd
                  cfg->inputCfg.channels, cfg->outputCfg.channels);
             return -EINVAL;
         }
+        if (cfg->inputCfg.format != cfg->outputCfg.format)
+        {
+            LOGE("SET_CONFIG: refusing format conversion (in 0x%x out 0x%x)",
+                 cfg->inputCfg.format, cfg->outputCfg.format);
+            return -EINVAL;
+        }
+        switch (cfg->inputCfg.format)
+        {
+        case AUDIO_FORMAT_PCM_FLOAT:
+        case AUDIO_FORMAT_PCM_16_BIT:
+        case AUDIO_FORMAT_PCM_32_BIT:
+        case AUDIO_FORMAT_PCM_8_24_BIT:
+        case AUDIO_FORMAT_PCM_24_BIT_PACKED:
+            break;
+        default:
+            LOGE("SET_CONFIG: unsupported PCM format 0x%x", cfg->inputCfg.format);
+            return -EINVAL;
+        }
+        if (cfg->outputCfg.accessMode != EFFECT_BUFFER_ACCESS_WRITE &&
+            cfg->outputCfg.accessMode != EFFECT_BUFFER_ACCESS_ACCUMULATE)
+        {
+            LOGE("SET_CONFIG: unsupported output access mode %d", cfg->outputCfg.accessMode);
+            return -EINVAL;
+        }
 
-        c->sampleRate = cfg->inputCfg.samplingRate;
+        const uint32_t nextRate = cfg->inputCfg.samplingRate;
+        const bool rateChanged = c->sampleRate != nextRate;
+        c->sampleRate = nextRate;
         c->channels = 2;
+        c->format = cfg->inputCfg.format;
         c->outAccessMode = cfg->outputCfg.accessMode;
 
-        JamesDSPInit(&c->dsp, RV4A_BLOCK, c->sampleRate);
+        /* Do not JamesDSPInit() here. AudioFlinger can reconfigure an existing
+           effect during route/sample-rate changes; reinitialising the whole
+           engine would silently wipe EQ, convolver, limiter and gain state.
+           Change only the sample-rate-dependent internals and preserve params. */
+        if (rateChanged)
+            JamesDSPSetSampleRate(&c->dsp, (float)c->sampleRate, 0);
+
         if (!JamesDSPGetMutexStatus(&c->dsp))
             LOGW("SET_CONFIG: engine reports no mutex; concurrent access unsafe");
         c->configured = true;
-        LOGI("SET_CONFIG: engine initialised at %u Hz, block %d", c->sampleRate, RV4A_BLOCK);
+        LOGI("SET_CONFIG: configured at %u Hz, format 0x%x, block %d%s",
+             c->sampleRate, c->format, RV4A_BLOCK, rateChanged ? " (rate changed)" : "");
 
         if (pReplyData && replySize && *replySize == sizeof(int))
             *(int *)pReplyData = 0;
@@ -567,7 +706,12 @@ HAL_EXPORT int32_t EffectCreate(const effect_uuid_t *uuid, int32_t sessionId, in
     c->itfe = &rv4a_interface;
     c->active = false;
     c->configured = false;
+    c->sampleRate = 48000;
+    c->channels = 2;
+    c->format = AUDIO_FORMAT_PCM_FLOAT;
     c->outAccessMode = EFFECT_BUFFER_ACCESS_WRITE;
+    c->accumScratch = nullptr;
+    c->accumScratchBytes = 0;
 
     /* Shared tables, allocated once for the process rather than per effect. */
     static bool globalReady = false;
@@ -595,6 +739,7 @@ HAL_EXPORT int32_t EffectRelease(effect_handle_t handle)
        holding the partitions gathered so far. */
     free(c->stringBuf);
     free(c->irBuf);
+    free(c->accumScratch);
     free(c);
     return 0;
 }
