@@ -1,7 +1,9 @@
 id=ffmpeg-c2
 name=FFmpeg Codec2 external store
 version=android-16.0-ref
-backend=codec2-service
+backend=codec2-apex
+activation=preinstalled-apex
+tier=experimental
 abi=arm64-v8a
 android_min=36
 android_max=37
