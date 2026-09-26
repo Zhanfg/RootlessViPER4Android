@@ -30,6 +30,8 @@ cc_library_shared {
         "-fdata-sections",
         "-ftree-vectorize",
         "-fvisibility=hidden",
+    ],
+    conlyflags: [
         "-Wno-error=implicit-function-declaration",
         "-Wno-error=implicit-int",
         "-Wno-error=incompatible-function-pointer-types",
