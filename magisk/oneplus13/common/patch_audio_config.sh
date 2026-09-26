@@ -31,6 +31,10 @@ patch_jdsp_audio_config() {
     echo "conflict: library name $JDSP_LIB_NAME already exists" >&2
     return 21
   fi
+  if grep -q '<effect[^>]*name="jamesdsp"' "$src"; then
+    echo "conflict: effect name jamesdsp already exists" >&2
+    return 22
+  fi
 
   tmp="$dst.tmp.$$"
   awk -v libname="$JDSP_LIB_NAME" -v libfile="$JDSP_LIB_FILE" \
@@ -52,22 +56,22 @@ patch_jdsp_audio_config() {
     rc=$?
     rm -f "$tmp"
     echo "failed to patch XML (awk=$rc)" >&2
-    return 22
+    return 30
   }
 
   [ "$(grep -ci "$JDSP_UUID" "$tmp")" -eq 1 ] || {
-    rm -f "$tmp"; echo "UUID validation failed" >&2; return 23;
+    rm -f "$tmp"; echo "UUID validation failed" >&2; return 31;
   }
   [ "$(grep -c "path=\"$JDSP_LIB_FILE\"" "$tmp")" -eq 1 ] || {
-    rm -f "$tmp"; echo "library validation failed" >&2; return 24;
+    rm -f "$tmp"; echo "library validation failed" >&2; return 32;
   }
-  [ "$(grep -c '<libraries>' "$tmp")" -eq "$(grep -c '</libraries>' "$tmp")" ] || {
-    rm -f "$tmp"; echo "libraries tag balance failed" >&2; return 25;
+  [ "$(grep -c '<libraries' "$tmp")" -eq "$(grep -c '</libraries>' "$tmp")" ] || {
+    rm -f "$tmp"; echo "libraries tag balance failed" >&2; return 33;
   }
-  [ "$(grep -c '<effects>' "$tmp")" -eq "$(grep -c '</effects>' "$tmp")" ] || {
-    rm -f "$tmp"; echo "effects tag balance failed" >&2; return 26;
+  [ "$(grep -c '<effects' "$tmp")" -eq "$(grep -c '</effects>' "$tmp")" ] || {
+    rm -f "$tmp"; echo "effects tag balance failed" >&2; return 34;
   }
 
-  mv -f "$tmp" "$dst" || return 27
+  mv -f "$tmp" "$dst" || return 35
   return 0
 }
