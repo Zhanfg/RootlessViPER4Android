@@ -41,6 +41,7 @@ LIB="$MODPATH/payload/libjamesdsp_aidl.so"
 [ -s "$LIB" ] || abort "! Missing verified libjamesdsp_aidl.so; this package is not flash-ready"
 
 . "$MODPATH/common/patch_audio_config.sh" || abort "! Failed to load patcher"
+. "$MODPATH/common/decoder_source.sh" || abort "! Failed to load decoder source layer"
 
 mkdir -p "$MODPATH/baseline"
 PATCHED=0
@@ -93,4 +94,13 @@ chcon u:object_r:vendor_file:s0 "$MODPATH/odm/lib64/soundfx/libjamesdsp_aidl.so"
 ui_print "- Patched $PATCHED live effect config(s)"
 ui_print "- Stock IFactory/default is untouched"
 ui_print "- No global <apply> entry was added; the root app attaches per session"
+
+# Optional decoder source is a separate failure domain. Reject/quarantine only
+# the decoder layer and keep the JamesDSP effect install intact.
+if ! decoder_install_selected_source; then
+  rc=$?
+  ui_print "! Decoder source rejected (code $rc); JamesDSP install continues"
+  decoder_quarantine_active
+fi
+
 ui_print "- Reboot required"
