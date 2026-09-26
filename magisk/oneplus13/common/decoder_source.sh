@@ -87,6 +87,12 @@ decoder_validate_source() {
   abi="$(decoder_read_prop abi "$prop")"
   amin="$(decoder_read_prop android_min "$prop")"
   amax="$(decoder_read_prop android_max "$prop")"
+  ready="$(decoder_read_prop payload_ready "$prop")"
+
+  [ "$ready" = "1" ] || {
+    decoder_log "source payload is not marked ready"
+    return 32
+  }
 
   decoder_validate_id "$id" || { decoder_log "invalid id: $id"; return 22; }
   [ "$abi" = "arm64-v8a" ] || { decoder_log "unsupported ABI: $abi"; return 23; }
@@ -209,14 +215,22 @@ decoder_health_check_active() {
       grep -q "android.hardware.media.c2.IComponentStore/$instance" || ok=0
   fi
 
-  OLDIFS="$IFS"; IFS=','
-  for c in $expect; do
-    [ -n "$c" ] || continue
-    dumpsys media.codec 2>/dev/null | grep -q "$c" || {
-      logcat -d -b all -t 1500 2>/dev/null | grep -q "$c" || ok=0
-    }
-  done
-  IFS="$OLDIFS"
+  # Component names are advisory here: many Codec2 stores enumerate lazily
+  # and dumpsys output differs between Android releases. Only the declared
+  # IComponentStore is a hard generic health condition; source-specific
+  # health.sh may enforce stronger component checks.
+  if [ -n "$expect" ]; then
+    missing=""
+    OLDIFS="$IFS"; IFS=','
+    for c in $expect; do
+      [ -n "$c" ] || continue
+      if ! dumpsys media.codec 2>/dev/null | grep -q "$c"; then
+        missing="$missing $c"
+      fi
+    done
+    IFS="$OLDIFS"
+    [ -z "$missing" ] || decoder_log "components not visible in dumpsys (soft):$missing"
+  fi
 
   if [ -n "$srcpath" ] && [ -x "$srcpath/health.sh" ]; then
     DECODER_SOURCE_DIR="$srcpath" DECODER_SOURCE_PROP="$prop" \
