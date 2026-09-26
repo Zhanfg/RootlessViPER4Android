@@ -6,6 +6,7 @@ on:
     branches: [ oneplus13-a16-sm8750 ]
     paths:
       - 'magisk/aidl/**'
+      - 'magisk/oneplus13/**'
       - 'app/src/main/cpp/**'
       - '.github/workflows/build-aidl.yml'
   workflow_dispatch:
