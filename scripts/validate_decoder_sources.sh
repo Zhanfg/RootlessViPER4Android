@@ -30,7 +30,7 @@ for dir in "$ROOT"/*; do
   fi
 
   while IFS='|' read -r rel target mode; do
-    [[ -z "$rel" || "$rel" == #* ]] && continue
+    [[ -z "$rel" || "$rel" == \#* ]] && continue
     case "$target" in
       /vendor/bin/hw/*|/vendor/lib64/*|/vendor/etc/init/*|/vendor/etc/vintf/*|/vendor/etc/seccomp_policy/*|/vendor/etc/media_codecs*.xml|/vendor/etc/media_codecs*.conf|/odm/bin/hw/*|/odm/lib64/*|/odm/etc/init/*|/odm/etc/vintf/*|/odm/etc/seccomp_policy/*|/odm/etc/media_codecs*.xml|/odm/etc/media_codecs*.conf) ;;
       *) echo "$id: forbidden target $target"; fail=1 ;;
