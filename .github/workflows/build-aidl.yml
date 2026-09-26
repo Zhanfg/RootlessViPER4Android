@@ -1,72 +1,79 @@
-name: Build AIDL effect service
+name: Build OnePlus 13 AIDL effect library
 
-# Separate from the app workflow: this builds a standalone HAL binary, needs a
-# different toolchain setup, and should not slow down or break APK builds while
-# it is still being brought up.
 on:
   push:
-    branches: [ viper-extras ]
+    branches: [ oneplus13-a16-sm8750 ]
     paths:
       - 'magisk/aidl/**'
+      - 'app/src/main/cpp/**'
       - '.github/workflows/build-aidl.yml'
   workflow_dispatch:
 
+concurrency:
+  group: o13-aidl-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-arm64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Install ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-
-      # build-tools 34 must not be used: it does not recognise a suppression
-      # annotation in AudioChannelLayout.aidl, reports it as an error, and
-      # silently emits only part of the package.
-      - name: Install build-tools 37
+      - name: Install build tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;37.0.0" >/dev/null
-          ls "$ANDROID_SDK_ROOT/build-tools/"
 
-      - name: Generate AIDL NDK backend
+      - name: Generate Android 16 AIDL V3 NDK backend
         run: |
           bash magisk/aidl/generate.sh
-          find magisk/aidl/generated -type f | wc -l
+          test -f magisk/aidl/generated/include/aidl/android/hardware/audio/effect/IEffect.h
+          grep -R "VERSION = 3" magisk/aidl/generated/include/aidl/android/hardware/audio/effect             | head -5 || true
 
-      # Only 64-bit: the AIDL effect HAL exists on Android 14 and later, and
-      # every device that ships it is 64-bit, so a 32-bit build would be dead
-      # weight in the package.
-      - name: Build all ABIs
+      - name: Configure arm64 build
         run: |
-          for abi in arm64-v8a x86_64; do
-            cmake -S magisk/aidl -B "build/$abi" -G Ninja \
-              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
-              -DANDROID_ABI="$abi" \
-              -DANDROID_PLATFORM=android-33
-            cmake --build "build/$abi"
+          cmake -S magisk/aidl -B build/o13-arm64 -G Ninja             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"             -DANDROID_ABI=arm64-v8a             -DANDROID_PLATFORM=android-33             -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build loadable effect library
+        run: cmake --build build/o13-arm64 --target jamesdsp_aidl -v
+
+      - name: Validate Android EffectFactory ABI
+        run: |
+          SO=build/o13-arm64/libjamesdsp_aidl.so
+          test -s "$SO"
+          READELF="$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-readelf | head -1)"
+          NM="$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-nm | head -1)"
+
+          echo "== exported entry points =="
+          "$NM" -D --defined-only "$SO" | tee build/o13-exports.txt
+          for sym in createEffect queryEffect destroyEffect; do
+            grep -Eq "[[:space:]]$sym$" build/o13-exports.txt || {
+              echo "Missing required export: $sym"
+              exit 1
+            }
           done
 
-      # The binary is ~30MB unstripped, almost all debug info. Stripping takes
-      # it to a size worth shipping in a module.
-      - name: Strip and stage
+          echo "== DT_NEEDED =="
+          "$READELF" -d "$SO" | tee build/o13-dynamic.txt
+          ! grep -q "rv4a-effect-service" build/o13-dynamic.txt
+
+          echo "== ELF =="
+          file "$SO"
+          "$READELF" -h "$SO" | tee build/o13-elf-header.txt
+
+      - name: Strip shipping copy
         run: |
-          STRIP="$(find "$ANDROID_NDK_LATEST_HOME" -name 'llvm-strip' | head -1)"
-          OUT=build/module
-          mkdir -p "$OUT/libs/arm64-v8a" "$OUT/libs/x86_64"
-          for abi in arm64-v8a x86_64; do
-            "$STRIP" "build/$abi/rv4a-effect-service" -o "$OUT/libs/$abi/rv4a-effect-service"
-            ls -la "$OUT/libs/$abi/rv4a-effect-service"
-          done
-          cp magisk/aidl/module/module.prop magisk/aidl/module/customize.sh \
-             magisk/aidl/module/post-fs-data.sh magisk/aidl/module/service.sh \
-             magisk/aidl/module/rv4a-effect.rc "$OUT/"
-          cp magisk/aidl/DESIGN.md "$OUT/README.md"
+          STRIP="$(find "$ANDROID_NDK_LATEST_HOME" -name llvm-strip | head -1)"
+          mkdir -p build/artifact
+          "$STRIP" build/o13-arm64/libjamesdsp_aidl.so             -o build/artifact/libjamesdsp_aidl.so
+          sha256sum build/artifact/libjamesdsp_aidl.so | tee build/artifact/SHA256SUMS
+          cp build/o13-exports.txt build/o13-dynamic.txt build/o13-elf-header.txt build/artifact/
 
-      - name: Package module
-        run: cd build/module && zip -qr ../rv4a-effect-aidl.zip . && unzip -l ../rv4a-effect-aidl.zip
-
-      - name: Upload module
+      - name: Upload OnePlus 13 engine
         uses: actions/upload-artifact@v4
         with:
-          name: RootfulViPER4Android-aidl-module
-          path: build/rv4a-effect-aidl.zip
+          name: OnePlus13-Android16-JamesDSP-AIDL-arm64
+          path: build/artifact/
