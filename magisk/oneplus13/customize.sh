@@ -96,11 +96,12 @@ patch_one() {
   dst="$MODPATH/$rel"
   mkdir -p "$(dirname "$dst")"
 
-  if [ "$LEGACY_MIGRATED" -gt 0 ]; then
-    JDSP_ALLOW_LEGACY_MIGRATION=1
-  else
-    JDSP_ALLOW_LEGACY_MIGRATION=0
-  fi
+  # Migration permission is based on the live XML shape, not on whether
+  # an old module directory is still marked active. The patcher itself only
+  # converts the exact known JamesDSP legacy tuple:
+  #   same UUID + name="jamesdsp" + unique libjamesdsp.so definition/ref.
+  # Unknown UUID owners/shared libraries still fail closed.
+  JDSP_ALLOW_LEGACY_MIGRATION=1
 
   patch_jdsp_audio_config "$src" "$dst"
   rc=$?
