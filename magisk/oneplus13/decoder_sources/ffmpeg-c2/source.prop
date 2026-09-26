@@ -8,5 +8,6 @@ android_max=37
 service_instance=ffmpeg
 expected_components=c2.ffmpeg.aac.decoder,c2.ffmpeg.ac3.decoder,c2.ffmpeg.alac.decoder,c2.ffmpeg.flac.decoder,c2.ffmpeg.mp2.decoder,c2.ffmpeg.mp3.decoder,c2.ffmpeg.vorbis.decoder
 allow_replace=0
+payload_ready=0
 upstream=raspberry-vanilla/android_external_ffmpeg_codec2
 upstream_ref=android-17.0
