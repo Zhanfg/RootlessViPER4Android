@@ -89,6 +89,13 @@ jobs:
           bash -n scripts/validate_decoder_sources.sh
           bash scripts/validate_decoder_sources.sh
 
+      - name: Validate installer and legacy XML migration
+        run: |
+          bash -n magisk/oneplus13/common/patch_audio_config.sh
+          bash -n magisk/oneplus13/customize.sh
+          bash -n scripts/test_o13_audio_patch.sh
+          bash scripts/test_o13_audio_patch.sh
+
       - name: Package PJZ110 systemless module
         run: |
           MOD=build/oneplus13-module
