@@ -79,7 +79,7 @@ jobs:
       - name: Upload OnePlus 13 engine
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus13-Android16-JamesDSP-AIDL-arm64
+          name: DEV-OnePlus13-JamesDSP-AIDL-EngineOnly-arm64
           path: build/artifact/
 
       - name: Validate decoder source packages
@@ -130,7 +130,7 @@ jobs:
       - name: Download verified AIDL engine
         uses: actions/download-artifact@v4
         with:
-          name: OnePlus13-Android16-JamesDSP-AIDL-arm64
+          name: DEV-OnePlus13-JamesDSP-AIDL-EngineOnly-arm64
           path: engine
 
       - name: Validate downloaded engine
@@ -186,10 +186,28 @@ jobs:
                   'assets/Convolver/Church.wav',
                   'assets/DDC/Butterworth.vdc',
                   'assets/Liveprog/3bandSplitting.eel',
+                  'lib/arm64-v8a/libjamesdsp.so',
+                  'lib/arm64-v8a/libjamesdsp-wrapper.so',
+                  'lib/arm64-v8a/libjdspimprestoolbox.so',
               ]
               missing=[x for x in required if x not in names]
               if missing:
-                  raise SystemExit(f"missing controller assets: {missing}")
+                  raise SystemExit(f"missing controller payload: {missing}")
+
+              conv=[n for n in names if n.startswith('assets/Convolver/') and not n.endswith('/')]
+              ddc=[n for n in names if n.startswith('assets/DDC/') and not n.endswith('/')]
+              live=[n for n in names if n.startswith('assets/Liveprog/') and not n.endswith('/')]
+              abis=sorted({n.split('/')[1] for n in names if n.startswith('lib/') and n.endswith('.so')})
+
+              print(f"controller_assets: convolver={len(conv)} ddc={len(ddc)} liveprog={len(live)} abis={abis}")
+              if len(conv) != 5:
+                  raise SystemExit(f"expected 5 Convolver assets, got {len(conv)}")
+              if len(ddc) != 3:
+                  raise SystemExit(f"expected 3 DDC assets, got {len(ddc)}")
+              if len(live) < 40:
+                  raise SystemExit(f"expected >=40 LiveProg assets, got {len(live)}")
+              if abis != ['arm64-v8a']:
+                  raise SystemExit(f"unexpected APK ABIs: {abis}")
           PY
 
       - name: Assemble full O13 module
@@ -205,6 +223,10 @@ jobs:
           cp magisk/oneplus13/common/patch_audio_config.sh              magisk/oneplus13/common/decoder_source.sh              magisk/oneplus13/common/full_bundle.sh              "$MOD/common/"
 
           cp -a magisk/oneplus13/decoder_sources/. "$MOD/decoder_sources/"
+          sed -i 's/^name=.*/name=OnePlus 13 JamesDSP AIDL Full/' "$MOD/module.prop"
+          sed -i 's/^version=.*/version=0.2.0-a16-full/' "$MOD/module.prop"
+          sed -i 's/^versionCode=.*/versionCode=2/' "$MOD/module.prop"
+          sed -i 's#^description=.*#description=Full OnePlus 13 Android 16 bundle: AIDL JamesDSP engine, controller APK, DSP resources and decoder-source framework; preserves stock QTI/OPlus factory.#' "$MOD/module.prop"
           cp /tmp/libjamesdsp_aidl.so "$MOD/payload/"
           cp /tmp/JDSP-O13.apk "$MOD/JDSP-O13.apk"
 
