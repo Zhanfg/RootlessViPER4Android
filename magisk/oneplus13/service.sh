@@ -6,6 +6,21 @@ MODPATH="$MODDIR"
 . "$MODDIR/common/decoder_source.sh" 2>/dev/null || true
 [ -r "$MODDIR/common/full_bundle.sh" ] && . "$MODDIR/common/full_bundle.sh"
 
+restore_legacy_migration() {
+  [ -f "$MODDIR/.migration_pending" ] || return 0
+  list="$MODDIR/migration/legacy_modules.list"
+  [ -r "$list" ] || return 0
+
+  while IFS= read -r legacy; do
+    case "$legacy" in /data/adb/modules/*) ;; *) continue ;; esac
+    [ -d "$legacy" ] || continue
+    rm -f "$legacy/disable"
+    echo "Restored legacy module for rollback: $legacy" >> "$LOG"
+  done < "$list"
+
+  rm -f "$MODDIR/.migration_pending"
+}
+
 i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ "$i" -lt 180 ]; do
   sleep 1
@@ -52,6 +67,7 @@ HOUT="$AUDIOHAL"; [ -n "$HOUT" ] || HOUT=missing
 
 if [ -z "$FACTORY" ] || [ -z "$AUDIOSERVER" ] || [ -z "$AUDIOHAL" ]; then
   echo "Critical stock audio service missing; disabling module for next boot" >> "$LOG"
+  restore_legacy_migration
   touch "$MODDIR/disable"
   exit 0
 fi
@@ -77,9 +93,14 @@ if logcat -d -b all -v brief -t 1200 2>/dev/null |
      grep -i 'libjamesdsp_aidl.so' |
      grep -Eqi 'dlopen.*fail|cannot.*load|not found|linker.*error'; then
   echo "JamesDSP AIDL library load failure; disabling module for next boot" >> "$LOG"
+  restore_legacy_migration
   touch "$MODDIR/disable"
   exit 0
 fi
 
 rm -f "$MARK"
+if [ -f "$MODDIR/.migration_pending" ]; then
+  rm -f "$MODDIR/.migration_pending"
+  echo "Legacy migration committed; rollback window closed" >> "$LOG"
+fi
 echo "Audio services healthy; boot marker cleared" >> "$LOG"
