@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <thread>
