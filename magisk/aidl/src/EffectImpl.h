@@ -1,95 +1,156 @@
-/*
- * AIDL effect implementation around this fork's engine.
- *
- * The legacy module hands the audio server a library exporting EffectCreate;
- * the audio server then calls process() with a buffer. Under AIDL none of that
- * applies. The framework asks a binder service for an IEffect, calls open(),
- * and from then on audio travels through three fast message queues that *we*
- * create and serve from our own thread:
- *
- *   inputDataMQ   framework -> us, interleaved floats
- *   outputDataMQ  us -> framework, same layout
- *   statusMQ      us -> framework, one Status per processed chunk saying how
- *                 much was consumed and produced
- *
- * So the processing loop is ours to drive, which is the main structural
- * difference from the legacy wrapper. Everything below the interface - engine
- * init from the negotiated config, block-bounded processing, and the parameter
- * mapping onto the engine's setters - carries over from
- * app/src/main/cpp/hal/JamesDspHalEffect.cpp unchanged in spirit.
- */
 #pragma once
-#include <aidl/android/hardware/audio/effect/BnEffect.h>
-#include <fmq/AidlMessageQueue.h>
-#include <android/binder_manager.h>
-#include <android-base/logging.h>
 
+#include <aidl/android/hardware/audio/effect/BnEffect.h>
+#include <aidl/android/hardware/audio/effect/DefaultExtension.h>
+#include <android-base/logging.h>
+#include <fmq/AidlMessageQueue.h>
+#include <hardware/audio_effect.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
-#include <aidl/android/hardware/audio/effect/DefaultExtension.h>
-#include <hardware/audio_effect.h>
-
-#include "EffectParams.h"   // the dispatch the legacy HAL uses, shared
+#include "EffectParams.h"
 
 extern "C" {
 #include "jdsp_header.h"
-void JamesDSPProcess(JamesDSPLib *jdsp, size_t n);
 }
+
+/* Legacy EEL headers export min/max as preprocessor macros. They break C++
+ * standard-library calls such as std::min and std::max in the AIDL wrapper.
+ * Keep the legacy macros contained to the DSP C sources. */
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 namespace aidl::android::hardware::audio::effect {
 
 using ::android::AidlMessageQueue;
 using ::aidl::android::hardware::common::fmq::SynchronizedReadWrite;
+using ::aidl::android::media::audio::common::AudioChannelLayout;
 using ::aidl::android::media::audio::common::AudioUuid;
+using ::aidl::android::media::audio::common::PcmType;
 
-/* Same identity the app already looks for, so nothing changes app-side. */
 static const AudioUuid kEffectUuid = {
-    // timeLow is int32_t, and these UUIDs have the high bit set, so the value
-    // has to be written as the signed pattern rather than narrowed implicitly.
-    static_cast<int32_t>(0xf27317f4), 0xc984, 0x4de6, 0x9a90, {0x54, 0x57, 0x59, 0x49, 0x5b, 0xf2}};
+    static_cast<int32_t>(0xf27317f4), 0xc984, 0x4de6, 0x9a90,
+    {0x54, 0x57, 0x59, 0x49, 0x5b, 0xf2}};
 static const AudioUuid kEffectType = {
-    static_cast<int32_t>(0xf98765f4), 0xc321, 0x5de6, 0x9a45, {0x12, 0x34, 0x59, 0x49, 0x5a, 0xb2}};
+    static_cast<int32_t>(0xf98765f4), 0xc321, 0x5de6, 0x9a45,
+    {0x12, 0x34, 0x59, 0x49, 0x5a, 0xb2}};
 
-/* The engine sizes its internals from the block given at init, so never hand
-   it more than this in one call regardless of what arrives. */
 static constexpr int kBlock = 4096;
+
+static int channelCount(const AudioChannelLayout& layout) {
+    int32_t mask = 0;
+    switch (layout.getTag()) {
+        case AudioChannelLayout::indexMask:
+            mask = layout.get<AudioChannelLayout::indexMask>();
+            break;
+        case AudioChannelLayout::layoutMask:
+            mask = layout.get<AudioChannelLayout::layoutMask>();
+            break;
+        case AudioChannelLayout::voiceMask:
+            mask = layout.get<AudioChannelLayout::voiceMask>();
+            break;
+        default:
+            return 0;
+    }
+    return __builtin_popcount(static_cast<uint32_t>(mask));
+}
 
 class Rv4aEffect : public BnEffect {
   public:
     Rv4aEffect() {
-        JamesDSPGlobalMemoryAllocation();
+        static std::once_flag globalOnce;
+        std::call_once(globalOnce, [] { JamesDSPGlobalMemoryAllocation(); });
         JamesDSPInit(&mDsp, kBlock, 48000);
     }
 
     ~Rv4aEffect() override {
         stopWorker();
+        std::lock_guard dspLock(mDspMutex);
         JamesDSPFree(&mDsp);
+    }
+
+    static Descriptor descriptor() {
+        Descriptor d;
+        d.common.id.type = kEffectType;
+        d.common.id.uuid = kEffectUuid;
+        d.common.name = "JamesDSP OnePlus13 AIDL";
+        d.common.implementor = "JamesDSP / OnePlus13 integration";
+        d.common.flags.type = Flags::Type::INSERT;
+        // Keep the output limiter as late as the framework permits so a stock
+        // software insert is less likely to re-amplify a limited signal.
+        d.common.flags.insert = Flags::Insert::LAST;
+        return d;
     }
 
     ndk::ScopedAStatus open(const Parameter::Common& common,
                             const std::optional<Parameter::Specific>&,
                             OpenEffectReturn* ret) override {
         std::lock_guard lock(mMutex);
-        if (mState != State::INIT) return ok();   // already open
+        if (mState != State::INIT) return ok();
 
-        mSampleRate = common.input.base.sampleRate;
-        mChannels = 2;
-        JamesDSPInit(&mDsp, kBlock, mSampleRate);
+        if (common.input.base.sampleRate <= 0 ||
+            common.input.base.sampleRate != common.output.base.sampleRate) {
+            LOG(ERROR) << "jdsp-o13: invalid/mismatched sample rate "
+                       << common.input.base.sampleRate << " -> "
+                       << common.output.base.sampleRate;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
 
-        /* Sized from the negotiated frame count rather than a guess: too small
-           and the framework stalls waiting for room, too large just wastes
-           shared memory. */
+        if (common.input.base.format.pcm != PcmType::FLOAT_32_BIT ||
+            common.output.base.format.pcm != PcmType::FLOAT_32_BIT) {
+            LOG(ERROR) << "jdsp-o13: AIDL effect FMQ must be FLOAT_32_BIT";
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        const int inputChannels = channelCount(common.input.base.channelMask);
+        const int outputChannels = channelCount(common.output.base.channelMask);
+        if (inputChannels != 2 || outputChannels != 2) {
+            // JamesDSP is a stereo engine. Never reinterpret 5.1/7.1/spatial
+            // buffers as stereo: rejecting is safer than corrupting the frame
+            // stride and producing a burst of full-scale noise.
+            LOG(WARNING) << "jdsp-o13: refusing non-stereo effect context in="
+                         << inputChannels << " out=" << outputChannels;
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        const int nextRate = common.input.base.sampleRate;
+        {
+            std::lock_guard dspLock(mDspMutex);
+            if (nextRate != mSampleRate) {
+                // Do not JamesDSPInit() here. Re-open and route changes must
+                // preserve EQ/convolver/limiter state already sent by the app.
+                JamesDSPSetSampleRate(&mDsp, static_cast<float>(nextRate), 0);
+                mSampleRate = nextRate;
+            }
+        }
+
+        mChannels = inputChannels;
         const size_t frames = common.input.frameCount > 0
                                   ? common.input.frameCount : kBlock;
         const size_t samples = frames * mChannels;
 
-        mStatusMQ = std::make_shared<StatusMQ>(1, true /* configure event flag */);
+        mStatusMQ = std::make_shared<StatusMQ>(1, true);
         mInputMQ = std::make_shared<DataMQ>(samples, true);
         mOutputMQ = std::make_shared<DataMQ>(samples, true);
         if (!mStatusMQ->isValid() || !mInputMQ->isValid() || !mOutputMQ->isValid()) {
-            LOG(ERROR) << "rv4a: failed to create message queues";
+            LOG(ERROR) << "jdsp-o13: failed to create effect FMQs";
+            mStatusMQ.reset();
+            mInputMQ.reset();
+            mOutputMQ.reset();
             return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
         }
 
@@ -98,64 +159,132 @@ class Rv4aEffect : public BnEffect {
         ret->outputDataMQ = mOutputMQ->dupeDesc();
 
         mState = State::IDLE;
-        LOG(INFO) << "rv4a: open at " << mSampleRate << " Hz, " << frames << " frames";
+        LOG(INFO) << "jdsp-o13: open " << mSampleRate << " Hz, " << frames << " frames";
         return ok();
     }
 
     ndk::ScopedAStatus close() override {
         stopWorker();
         std::lock_guard lock(mMutex);
-        mStatusMQ.reset(); mInputMQ.reset(); mOutputMQ.reset();
+        mStatusMQ.reset();
+        mInputMQ.reset();
+        mOutputMQ.reset();
         mState = State::INIT;
         return ok();
     }
 
     ndk::ScopedAStatus getDescriptor(Descriptor* desc) override {
-        desc->common.id.type = kEffectType;
-        desc->common.id.uuid = kEffectUuid;
-        desc->common.name = "RootlessViPER4Android";
-        desc->common.implementor = "alienware377";
-        desc->common.flags.type = Flags::Type::INSERT;
-        desc->common.flags.insert = Flags::Insert::FIRST;
+        if (!desc) return ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
+        *desc = descriptor();
         return ok();
     }
 
     ndk::ScopedAStatus command(CommandId id) override {
         switch (id) {
-            case CommandId::START:
-                startWorker();
-                break;
+            case CommandId::START: startWorker(); break;
             case CommandId::STOP:
-            case CommandId::RESET:
-                stopWorker();
-                break;
-            default:
-                break;
+            case CommandId::RESET: stopWorker(); break;
+            default: break;
         }
         return ok();
     }
 
     ndk::ScopedAStatus getState(State* state) override {
+        if (!state) return ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
         *state = mState;
         return ok();
     }
 
     ndk::ScopedAStatus setParameter(const Parameter& param) override {
-        /* Our own effects travel as a vendor extension rather than one of the
-           standard union arms, since none of them describe what this engine
-           does. The payload is the same id-and-values shape the legacy module
-           already understands, so both paths stay in step. */
-        applyVendorParameter(param);
+        if (!applyVendorParameter(param)) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
         return ok();
     }
 
-    ndk::ScopedAStatus getParameter(const Parameter::Id&, Parameter*) override {
+    ndk::ScopedAStatus getParameter(const Parameter::Id& id, Parameter* result) override {
+        if (!result || id.getTag() != Parameter::Id::vendorEffectTag) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        const auto& extId = id.get<Parameter::Id::vendorEffectTag>();
+        std::optional<DefaultExtension> request;
+        if (extId.extension.getParcelable(&request) != STATUS_OK || !request.has_value()) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        DefaultExtension response = *request;
+        auto& bytes = response.bytes;
+        if (bytes.size() < sizeof(effect_param_t)) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        auto* p = reinterpret_cast<effect_param_t*>(bytes.data());
+        if (p->psize != sizeof(int32_t)) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+        const size_t valueOffset = sizeof(effect_param_t) + ((p->psize + 3u) & ~3u);
+        if (p->vsize < sizeof(int32_t) || bytes.size() < valueOffset + sizeof(int32_t)) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+
+        const int32_t query = *reinterpret_cast<const int32_t*>(p->data);
+        int32_t value = 0;
+        {
+            std::lock_guard dspLock(mDspMutex);
+            switch (query) {
+                case 19998: value = static_cast<int32_t>(mParamCommits); break;
+                case 19999: value = kBlock; break;
+                case 20000: value = static_cast<int32_t>(mDsp.blockSizeMax); break;
+                case 20001: value = mSampleRate; break;
+                case 20002: value = static_cast<int32_t>(getpid()); break;
+                // OnePlus 13 optional telemetry extension. Generic/legacy
+                // JamesDSP drivers may simply reject these queries; the
+                // controller treats that as a capability downgrade.
+                case 20010: value = mLastPeakMilliDb.load(std::memory_order_relaxed); break;
+                case 20011: value = mLastClipSamples.load(std::memory_order_relaxed); break;
+                case 20012: value = mLastProcessUs.load(std::memory_order_relaxed); break;
+                case 20013: value = mMaxProcessUs.load(std::memory_order_relaxed); break;
+                case 20014: value = mLastFrames.load(std::memory_order_relaxed); break;
+                case 20015: value = static_cast<int32_t>(
+                    mProcessedBlocks.load(std::memory_order_relaxed) & 0x7fffffffULL); break;
+                case 20016: value = mSafetyGuardEnabled.load(std::memory_order_relaxed) ? 1 : 0; break;
+                case 20017: {
+                    const float gain = std::max(
+                        1.0e-6f, mSafetyGain.load(std::memory_order_relaxed));
+                    value = static_cast<int32_t>(
+                        std::lround(20.0 * std::log10(static_cast<double>(gain)) * 1000.0));
+                    break;
+                }
+                case 20018: value = static_cast<int32_t>(
+                    mClipEvents.load(std::memory_order_relaxed) & 0x7fffffffULL); break;
+                case 30000:
+                case 30001:
+                case 30002:
+                case 30003: value = mHashSlot[query - 30000]; break;
+                default:
+                    return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+            }
+        }
+
+        p->status = 0;
+        std::memcpy(bytes.data() + valueOffset, &value, sizeof(value));
+
+        VendorExtension extension;
+        if (extension.extension.setParcelable(response) != STATUS_OK) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+        }
+        Parameter::Specific specific;
+        specific.set<Parameter::Specific::vendorEffect>(extension);
+        result->set<Parameter::specific>(specific);
         return ok();
     }
 
     ndk::ScopedAStatus reopen(OpenEffectReturn* ret) override {
         std::lock_guard lock(mMutex);
-        if (!mStatusMQ) return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
+        if (!mStatusMQ || !mInputMQ || !mOutputMQ) {
+            return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
+        }
         ret->statusMQ = mStatusMQ->dupeDesc();
         ret->inputDataMQ = mInputMQ->dupeDesc();
         ret->outputDataMQ = mOutputMQ->dupeDesc();
@@ -180,93 +309,307 @@ class Rv4aEffect : public BnEffect {
         if (mState == State::PROCESSING) mState = State::IDLE;
     }
 
-    /*
-     * Reads whatever the framework has queued, processes it in engine-sized
-     * chunks, and reports back. Deinterleaving is needed because the queues
-     * carry interleaved frames while the engine works on planar channels.
-     */
     void workerLoop() {
-        std::vector<float> in, left(kBlock), right(kBlock);
+        std::vector<float> in;
+        std::vector<float> out;
 
         while (mRunning.load()) {
-            const size_t avail = mInputMQ ? mInputMQ->availableToRead() : 0;
-            if (avail == 0) {
+            if (!mInputMQ || !mOutputMQ || !mStatusMQ) break;
+
+            size_t samples = std::min(mInputMQ->availableToRead(),
+                                      mOutputMQ->availableToWrite());
+            samples -= samples % static_cast<size_t>(mChannels);
+            if (samples == 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
 
-            in.resize(avail);
-            if (!mInputMQ->read(in.data(), avail)) continue;
+            in.resize(samples);
+            out.resize(samples);
+            if (!mInputMQ->read(in.data(), samples)) continue;
 
-            const size_t frames = avail / mChannels;
-            for (size_t off = 0; off < frames; off += kBlock) {
-                const size_t n = std::min<size_t>(kBlock, frames - off);
-                for (size_t i = 0; i < n; i++) {
-                    left[i] = in[(off + i) * 2];
-                    right[i] = in[(off + i) * 2 + 1];
-                }
-                mDsp.tmpBuffer[0] = left.data();
-                mDsp.tmpBuffer[1] = right.data();
-                JamesDSPProcess(&mDsp, n);
-                for (size_t i = 0; i < n; i++) {
-                    in[(off + i) * 2] = left[i];
-                    in[(off + i) * 2 + 1] = right[i];
+            const size_t frames = samples / static_cast<size_t>(mChannels);
+            const auto processStart = std::chrono::steady_clock::now();
+            {
+                std::lock_guard dspLock(mDspMutex);
+                for (size_t off = 0; off < frames; off += kBlock) {
+                    const size_t n = std::min<size_t>(kBlock, frames - off);
+                    mDsp.processFloatMultiplexd(&mDsp,
+                        in.data() + off * mChannels,
+                        out.data() + off * mChannels,
+                        n);
                 }
             }
+            const auto processUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - processStart).count();
 
-            const bool wrote = mOutputMQ->write(in.data(), avail);
+            float peak = 0.0f;
+            int32_t clipped = 0;
+            for (const float sample : out) {
+                if (!std::isfinite(sample)) {
+                    ++clipped;
+                    peak = std::numeric_limits<float>::infinity();
+                    continue;
+                }
+                const float a = std::fabs(sample);
+                peak = std::max(peak, a);
+                if (a >= 1.0f) ++clipped;
+            }
+
+            int32_t peakMilliDb = -120000;
+            if (std::isfinite(peak) && peak > 0.0f) {
+                peakMilliDb = static_cast<int32_t>(
+                    std::lround(20.0 * std::log10(static_cast<double>(peak)) * 1000.0));
+            } else if (!std::isfinite(peak)) {
+                peakMilliDb = 120000;
+            }
+
+            if (clipped > 0) {
+                mClipEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            // Optional last-resort headroom guard for the O13 AIDL path.
+            // It never mutates JamesDSP preset/post-gain state: the gain lives
+            // entirely in this wrapper and recovers smoothly after overloads.
+            float safetyGain = mSafetyGain.load(std::memory_order_relaxed);
+            if (mSafetyGuardEnabled.load(std::memory_order_relaxed)) {
+                constexpr float kTargetPeak = 0.98f;
+                constexpr float kMinGain = 0.10f;
+                float desiredGain = 1.0f;
+                if (!std::isfinite(peak)) {
+                    desiredGain = kMinGain;
+                } else if (peak > kTargetPeak) {
+                    desiredGain = std::max(kMinGain, kTargetPeak / peak);
+                }
+
+                if (desiredGain < safetyGain) {
+                    // Fast attack: prevent the next write from exceeding full scale.
+                    safetyGain = desiredGain;
+                } else {
+                    // Slow release (~2 s) to avoid pumping after a transient peak.
+                    const float dt = mSampleRate > 0
+                        ? static_cast<float>(frames) / static_cast<float>(mSampleRate)
+                        : 0.0f;
+                    const float release = std::clamp(dt / 2.0f, 0.0f, 1.0f);
+                    safetyGain += (1.0f - safetyGain) * release;
+                }
+
+                for (float& sample : out) {
+                    if (!std::isfinite(sample)) {
+                        sample = 0.0f;
+                        continue;
+                    }
+                    sample *= safetyGain;
+                    sample = std::clamp(sample, -0.9995f, 0.9995f);
+                }
+            } else {
+                safetyGain = 1.0f;
+            }
+            mSafetyGain.store(safetyGain, std::memory_order_relaxed);
+
+            mLastPeakMilliDb.store(peakMilliDb, std::memory_order_relaxed);
+            mLastClipSamples.store(clipped, std::memory_order_relaxed);
+            mLastProcessUs.store(static_cast<int32_t>(
+                std::min<int64_t>(processUs, INT32_MAX)), std::memory_order_relaxed);
+            int32_t previousMax = mMaxProcessUs.load(std::memory_order_relaxed);
+            const int32_t currentUs = mLastProcessUs.load(std::memory_order_relaxed);
+            while (currentUs > previousMax &&
+                   !mMaxProcessUs.compare_exchange_weak(
+                       previousMax, currentUs, std::memory_order_relaxed)) {}
+            mLastFrames.store(static_cast<int32_t>(
+                std::min<size_t>(frames, INT32_MAX)), std::memory_order_relaxed);
+            mProcessedBlocks.fetch_add(1, std::memory_order_relaxed);
+
+            const bool wrote = mOutputMQ->write(out.data(), samples);
             IEffect::Status st{wrote ? STATUS_OK : STATUS_INVALID_OPERATION,
-                               static_cast<int>(avail),
-                               static_cast<int>(wrote ? avail : 0)};
-            mStatusMQ->write(&st, 1);
+                               static_cast<int>(samples),
+                               static_cast<int>(wrote ? samples : 0)};
+            // A full one-entry status queue means the framework has not yet
+            // consumed the previous result. Give it a bounded chance instead
+            // of silently dropping the status and desynchronising FMQ pacing.
+            if (!mStatusMQ->writeBlocking(&st, 1, 20'000'000 /* 20 ms */)) {
+                LOG(WARNING) << "jdsp-o13: status FMQ blocked; stopping worker";
+                mRunning.store(false);
+                break;
+            }
         }
     }
 
-    /*
-     * The framework does not stop speaking the old language just because the
-     * HAL is new: an app calling AudioEffect.setParameter has its legacy
-     * effect_param_t wrapped into a VendorExtension and delivered here. So the
-     * app needs no AIDL of its own, and the payload is byte-for-byte what the
-     * legacy HAL already parses - which is why the dispatch is shared rather
-     * than written twice.
-     */
-    void applyVendorParameter(const Parameter& param) {
-        if (param.getTag() != Parameter::specific) return;
+    bool handleBufferedPayload(int32_t id, const void* val, uint32_t vsize) {
+        switch (id) {
+            case 8888: {
+                if (vsize < 2 * sizeof(int32_t)) return true;
+                const int32_t* v = static_cast<const int32_t*>(val);
+                const int64_t parts = v[0], per = v[1];
+                mStringBuf.clear();
+                mStringIndex = 0;
+                if (parts <= 0 || per <= 0 || parts * per > (16 << 20)) return true;
+                mStringBuf.assign(static_cast<size_t>(parts * per) + 1u, 0);
+                return true;
+            }
+            case 12001: {
+                if (mStringBuf.empty() || vsize < 256) return true;
+                const size_t off = static_cast<size_t>(mStringIndex) * 256u;
+                if (off + 256u <= mStringBuf.size() - 1u) {
+                    std::memcpy(mStringBuf.data() + off, val, 256);
+                    ++mStringIndex;
+                }
+                return true;
+            }
+            case 9999: {
+                if (vsize < 4 * sizeof(int32_t)) return true;
+                const int32_t* v = static_cast<const int32_t*>(val);
+                const int channels = v[1], parts = v[3];
+                mIrBuf.clear();
+                mIrPartsSeen = 0;
+                if (channels <= 0 || channels > 2 || parts <= 0 ||
+                    static_cast<int64_t>(parts) * channels * 4096 > (64 << 20)) {
+                    return true;
+                }
+                mIrChannels = channels;
+                mIrFrames = channels ? v[0] / channels : 0;
+                mIrParts = parts;
+                mIrBuf.assign(static_cast<size_t>(4096) * channels * parts, 0.0f);
+                return true;
+            }
+            case 12000: {
+                if (mIrBuf.empty() || vsize < 4096u * sizeof(float)) return true;
+                const size_t off = static_cast<size_t>(mIrPartsSeen) * 4096u;
+                if (off + 4096u <= mIrBuf.size()) {
+                    std::memcpy(mIrBuf.data() + off, val, 4096u * sizeof(float));
+                    ++mIrPartsSeen;
+                }
+                return true;
+            }
+            case 10004: {
+                if (!mIrBuf.empty()) {
+                    const int rc = Convolver1DLoadImpulseResponse(
+                        &mDsp, mIrBuf.data(), static_cast<int16_t>(mIrChannels),
+                        mIrFrames, 1);
+                    mHaveIr = rc >= 0;
+                    mIrBuf.clear();
+                    mIrPartsSeen = 0;
+                }
+                return true;
+            }
+            case 10006:
+            case 10009:
+            case 10010: {
+                if (!mStringBuf.empty()) {
+                    mStringBuf.back() = '\0';
+                    if (id == 10006) {
+                        ArbitraryResponseEqualizerStringParser(&mDsp, mStringBuf.data());
+                        mHaveGraphicEq = true;
+                    } else if (id == 10009) {
+                        DDCStringParser(&mDsp, mStringBuf.data());
+                        mHaveDdc = true;
+                    } else {
+                        mHaveLiveprog = LiveProgStringParser(&mDsp, mStringBuf.data()) == 0;
+                    }
+                    mStringBuf.clear();
+                }
+                mStringIndex = 0;
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    bool applyVendorParameter(const Parameter& param) {
+        if (param.getTag() != Parameter::specific) return false;
         const auto& specific = param.get<Parameter::specific>();
-        if (specific.getTag() != Parameter::Specific::vendorEffect) return;
+        if (specific.getTag() != Parameter::Specific::vendorEffect) return false;
 
         std::optional<DefaultExtension> payload;
         if (specific.get<Parameter::Specific::vendorEffect>()
                     .extension.getParcelable(&payload) != STATUS_OK ||
             !payload.has_value()) {
-            LOG(WARNING) << "rv4a: vendor parameter carried no default extension";
-            return;
+            return false;
         }
 
-        /* Same layout as the legacy path: a four-byte id, then the value
-           aligned to four bytes, with vsize giving its width. */
         const auto& bytes = payload->bytes;
-        if (bytes.size() < sizeof(effect_param_t)) return;
+        if (bytes.size() < sizeof(effect_param_t)) return false;
         auto* p = reinterpret_cast<const effect_param_t*>(bytes.data());
-        if (p->psize != sizeof(int32_t)) return;
+        if (p->psize != sizeof(int32_t)) return false;
+
+        const size_t valueOffset = sizeof(effect_param_t) + ((p->psize + 3u) & ~3u);
+        if (bytes.size() < valueOffset + p->vsize) return false;
 
         const int32_t id = *reinterpret_cast<const int32_t*>(p->data);
-        const void* val = p->data + ((p->psize + 3) & ~3);
-        const int16_t sv = (p->vsize >= sizeof(int16_t))
+        const void* val = bytes.data() + valueOffset;
+        const int16_t sv = p->vsize >= sizeof(int16_t)
                                ? *reinterpret_cast<const int16_t*>(val) : 0;
 
-        LOG(DEBUG) << "rv4a: parameter id " << id << " vsize " << p->vsize;
+        std::lock_guard dspLock(mDspMutex);
+        ++mParamCommits;
+
+        if (handleBufferedPayload(id, val, p->vsize)) return true;
+
+        if (id == 1600) {
+            mSafetyGuardEnabled.store(sv != 0, std::memory_order_relaxed);
+            if (sv == 0) {
+                mSafetyGain.store(1.0f, std::memory_order_relaxed);
+            }
+            return true;
+        }
+
+        if (id >= 25000 && id <= 25003) {
+            if (p->vsize >= sizeof(int32_t)) {
+                mHashSlot[id - 25000] = *reinterpret_cast<const int32_t*>(val);
+            }
+            return true;
+        }
+
+        if ((id == 1205 && sv != 0 && !mHaveIr) ||
+            (id == 1210 && sv != 0 && !mHaveGraphicEq) ||
+            (id == 1212 && sv != 0 && !mHaveDdc) ||
+            (id == 1213 && sv != 0 && !mHaveLiveprog)) {
+            return true;
+        }
+
         applyParam(&mDsp, id, sv, sv != 0,
-                   reinterpret_cast<const float*>(val), p->vsize / sizeof(float));
+                   reinterpret_cast<const float*>(val),
+                   p->vsize / sizeof(float));
+        return true;
     }
 
     JamesDSPLib mDsp{};
     std::mutex mMutex;
+    std::mutex mDspMutex;
     std::atomic<bool> mRunning{false};
     std::thread mWorker;
     State mState{State::INIT};
     int mSampleRate{48000};
     int mChannels{2};
+
+    uint32_t mParamCommits{0};
+    int32_t mHashSlot[4]{0, 0, 0, 0};
+
+    std::atomic<int32_t> mLastPeakMilliDb{-120000};
+    std::atomic<int32_t> mLastClipSamples{0};
+    std::atomic<int32_t> mLastProcessUs{0};
+    std::atomic<int32_t> mMaxProcessUs{0};
+    std::atomic<int32_t> mLastFrames{0};
+    std::atomic<uint64_t> mProcessedBlocks{0};
+    std::atomic<uint64_t> mClipEvents{0};
+    std::atomic<bool> mSafetyGuardEnabled{false};
+    std::atomic<float> mSafetyGain{1.0f};
+
+    std::vector<char> mStringBuf;
+    int mStringIndex{0};
+
+    std::vector<float> mIrBuf;
+    int mIrPartsSeen{0};
+    int mIrParts{0};
+    int mIrChannels{0};
+    int mIrFrames{0};
+
+    bool mHaveIr{false};
+    bool mHaveGraphicEq{false};
+    bool mHaveDdc{false};
+    bool mHaveLiveprog{false};
+
     std::shared_ptr<StatusMQ> mStatusMQ;
     std::shared_ptr<DataMQ> mInputMQ, mOutputMQ;
 };

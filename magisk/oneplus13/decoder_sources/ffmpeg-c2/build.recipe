@@ -1,0 +1,12 @@
+source_repo=raspberry-vanilla/android_external_ffmpeg_codec2
+source_ref=android-16.0
+dependency_repo=raspberry-vanilla/android_external_ffmpeg
+dependency_ref=android-16.0
+build_system=soong
+build_target=com.android.hardware.media.c2.ffmpeg
+service_binary=android.hardware.media.c2-service-ffmpeg
+service_instance=ffmpeg
+apex_name=com.android.hardware.media.c2.ffmpeg
+android_api=36
+abi=arm64-v8a
+components=c2.ffmpeg.aac.decoder,c2.ffmpeg.ac3.decoder,c2.ffmpeg.alac.decoder,c2.ffmpeg.flac.decoder,c2.ffmpeg.mp2.decoder,c2.ffmpeg.mp3.decoder,c2.ffmpeg.vorbis.decoder

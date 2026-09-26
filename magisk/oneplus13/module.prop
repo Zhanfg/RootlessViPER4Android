@@ -1,0 +1,6 @@
+id=oneplus13_jamesdsp_aidl
+name=OnePlus 13 JamesDSP AIDL
+version=0.1.0-a16-dev
+versionCode=1
+author=JamesDSP contributors / OnePlus 13 integration
+description=Additive Android 16 AIDL JamesDSP effect for OnePlus 13 PJZ110; preserves the stock QTI/OPlus audio effect factory.

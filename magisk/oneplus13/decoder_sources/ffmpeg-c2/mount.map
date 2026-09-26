@@ -1,0 +1,11 @@
+# Reference map only. Inactive until compatible payload files are built.
+# payload-relative-path|absolute-target-path|mode
+#
+# vendor/bin/hw/android.hardware.media.c2-service-ffmpeg|/vendor/bin/hw/android.hardware.media.c2-service-ffmpeg|0755
+# vendor/etc/init/android.hardware.media.c2-service-ffmpeg.rc|/vendor/etc/init/android.hardware.media.c2-service-ffmpeg.rc|0644
+# vendor/etc/vintf/manifest/android.hardware.media.c2-service-ffmpeg.xml|/vendor/etc/vintf/manifest/android.hardware.media.c2-service-ffmpeg.xml|0644
+# vendor/etc/seccomp_policy/android.hardware.media.c2-ffmpeg-default-seccomp_policy|/vendor/etc/seccomp_policy/android.hardware.media.c2-ffmpeg-default-seccomp_policy|0644
+# vendor/etc/seccomp_policy/android.hardware.media.c2-ffmpeg-extended-seccomp_policy|/vendor/etc/seccomp_policy/android.hardware.media.c2-ffmpeg-extended-seccomp_policy|0644
+# vendor/lib64/libavcodec.so|/vendor/lib64/libavcodec.so|0644
+# vendor/lib64/libavutil.so|/vendor/lib64/libavutil.so|0644
+# vendor/lib64/libswresample.so|/vendor/lib64/libswresample.so|0644
