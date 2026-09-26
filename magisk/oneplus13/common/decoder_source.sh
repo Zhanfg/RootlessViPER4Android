@@ -88,6 +88,18 @@ decoder_validate_source() {
   amin="$(decoder_read_prop android_min "$prop")"
   amax="$(decoder_read_prop android_max "$prop")"
   ready="$(decoder_read_prop payload_ready "$prop")"
+  tier="$(decoder_read_prop tier "$prop")"
+  activation="$(decoder_read_prop activation "$prop")"
+
+  case "$tier" in
+    stable|experimental) ;;
+    *) decoder_log "invalid source tier: $tier"; return 33 ;;
+  esac
+
+  if [ "$backend" = "codec2-service" ] && [ "$tier" != "experimental" ]; then
+    decoder_log "loose Codec2 service sources must remain experimental"
+    return 34
+  fi
 
   [ "$ready" = "1" ] || {
     decoder_log "source payload is not marked ready"
