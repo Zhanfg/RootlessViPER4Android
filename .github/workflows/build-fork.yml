@@ -1,7 +1,7 @@
 name: Build fork APK
 on:
   push:
-    branches: [ master, viper-extras ]
+    branches: [ master, viper-extras, 'merge9/**' ]
   workflow_dispatch:
 
 jobs:
@@ -13,6 +13,12 @@ jobs:
         with:
           java-version: 17
           distribution: adopt
+
+      - name: Run rootless unit tests
+        run: ./gradlew testRootlessFdroidReleaseUnitTest --no-daemon
+
+      - name: Run rootless static checks
+        run: ./gradlew lintRootlessFdroidRelease --no-daemon
 
       - name: Build rootless release APK (FOSS, optimized)
         run: ./gradlew assembleRootlessFdroidRelease --no-daemon
