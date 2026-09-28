@@ -1,11 +1,15 @@
 package me.timschneeberger.rootlessjamesdsp.fragment.settings
 
+import android.content.Intent
 import android.os.Bundle
+import androidx.preference.ListPreference
 import androidx.preference.Preference
 import me.timschneeberger.rootlessjamesdsp.R
+import me.timschneeberger.rootlessjamesdsp.utils.Constants
+import me.timschneeberger.rootlessjamesdsp.utils.V4aMode
+import me.timschneeberger.rootlessjamesdsp.utils.extensions.ContextExtensions.sendLocalBroadcast
 import me.timschneeberger.rootlessjamesdsp.utils.isPlugin
 import me.timschneeberger.rootlessjamesdsp.utils.isRootless
-
 
 class SettingsFragment : SettingsBaseFragment() {
 
@@ -13,18 +17,15 @@ class SettingsFragment : SettingsBaseFragment() {
     private val troubleshooting by lazy { findPreference<Preference>(getString(R.string.key_troubleshooting)) }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+        preferenceManager.sharedPreferencesName = Constants.PREF_APP
         setPreferencesFromResource(R.xml.app_preferences, rootKey)
 
-        findPreference<androidx.preference.TwoStatePreference>(getString(R.string.key_v4a_mode))?.apply {
-            val appPrefs = requireContext().getSharedPreferences(
-                me.timschneeberger.rootlessjamesdsp.utils.Constants.PREF_APP,
-                android.content.Context.MODE_MULTI_PROCESS)
-            isChecked = appPrefs.getBoolean(me.timschneeberger.rootlessjamesdsp.utils.V4aMode.KEY, false)
+        findPreference<ListPreference>(getString(R.string.key_dsp_mode))?.apply {
+            value = V4aMode.currentMode(requireContext()).value
             setOnPreferenceChangeListener { _, newValue ->
-                val on = newValue as Boolean
-                appPrefs.edit().putBoolean(me.timschneeberger.rootlessjamesdsp.utils.V4aMode.KEY, on).apply()
-                if (on)
-                    me.timschneeberger.rootlessjamesdsp.utils.V4aMode.disableNonV4aEffects(requireContext())
+                val mode = V4aMode.DspMode.fromValue(newValue as? String)
+                V4aMode.setMode(requireContext(), mode)
+                requireContext().sendLocalBroadcast(Intent(Constants.ACTION_PREFERENCES_UPDATED))
                 true
             }
         }

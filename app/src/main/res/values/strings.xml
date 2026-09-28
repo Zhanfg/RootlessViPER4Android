@@ -400,6 +400,11 @@
     <string name="theme_v4a_classic">ViPER4Android classic</string>
     <string name="v4a_mode_title">ViPER4Android only mode</string>
     <string name="v4a_mode_summary">Show only the original V4A effects with V4A naming. Everything else is switched off and uses no resources.</string>
+    <string name="dsp_mode_title">DSP mode</string>
+    <string name="dsp_mode_summary">Choose the full hybrid chain, the upstream JamesDSP toolset, or the classic ViPER4Android effect set.</string>
+    <string name="dsp_mode_hybrid">Hybrid (JamesDSP + ViPER)</string>
+    <string name="dsp_mode_jamesdsp">JamesDSP</string>
+    <string name="dsp_mode_viper">ViPER4Android</string>
     <string name="v4a_master_limiter">Master limiter</string>
     <string name="v4a_output_gain">Output gain</string>
     <string name="v4a_limit_threshold">Limit threshold</string>

@@ -173,6 +173,13 @@ class DspFragment : Fragment(), SharedPreferences.OnSharedPreferenceChangeListen
                 (binding.cardDeviceProfiles.parent as ViewGroup).isVisible =
                     prefsApp.get<Boolean>(R.string.key_device_profiles_enable)
             }
+            getString(R.string.key_dsp_mode) -> {
+                V4aMode.invalidate()
+                if (::binding.isInitialized) {
+                    applyV4aVisibility()
+                    applyLiveprogSlotVisibility(rebuild = true)
+                }
+            }
         }
     }
 
@@ -277,16 +284,18 @@ class DspFragment : Fragment(), SharedPreferences.OnSharedPreferenceChangeListen
                 val userHidden = layoutManager?.isHidden(
                     resources.getResourceEntryName(entry.cardId)
                 ) == true
-                val v4aHidden = V4aMode.isOn(requireContext()) &&
-                        entry.cardId in V4aMode.hiddenCardIds
-                val visible = !userHidden && !v4aHidden && (!searching || title.contains(q))
+                val modeHidden = entry.cardId in V4aMode.hiddenCardIdsFor(requireContext())
+                val visible = !userHidden && !modeHidden && (!searching || title.contains(q))
                 card.isVisible = visible
                 if (visible && searching) matches++
             }
         }
 
         // Group headers and non-effect cards only make sense outside of search
-        binding.root.findViewById<View>(R.id.v4a_section_header)?.isVisible = !searching
+        binding.root.findViewById<View>(R.id.v4a_section_header)?.isVisible =
+            !searching &&
+                V4aMode.currentMode(requireContext()) != V4aMode.DspMode.JAMESDSP &&
+                !me.timschneeberger.rootlessjamesdsp.utils.V4aIconColors.isClassicLayout(requireContext())
         binding.root.findViewById<View>(R.id.card_device_profiles)?.let {
             (it.parent as? View)?.isVisible = !searching
         }
@@ -483,29 +492,67 @@ class DspFragment : Fragment(), SharedPreferences.OnSharedPreferenceChangeListen
         }
     }
 
-    /** Hides every card the original ViPER4Android didn't have. */
+    /** Applies the visible card set for JamesDSP, ViPER or Hybrid mode. */
     private fun applyV4aVisibility() {
-        if (!isAdded) return
-        val on = V4aMode.isOn(requireContext())
-        // Classic layout drops the "ViPER4Android effects" divider heading and
-        // the gap it occupied - the original had one uninterrupted list.
-        if (me.timschneeberger.rootlessjamesdsp.utils.V4aIconColors.isClassicLayout(requireContext())) {
-            binding.v4aSectionHeader.isVisible = false
+        if (!isAdded || !::binding.isInitialized) return
+
+        val context = requireContext()
+        val mode = V4aMode.currentMode(context)
+        val hiddenIds = V4aMode.hiddenCardIdsFor(context)
+        val hiddenSet = hiddenIds.toSet()
+        val viperOnly = mode == V4aMode.DspMode.VIPER
+        val classicLayout =
+            me.timschneeberger.rootlessjamesdsp.utils.V4aIconColors.isClassicLayout(context)
+
+        // V4A-only mode intentionally behaves like the fixed original UI.
+        // JamesDSP and Hybrid keep search/reordering available.
+        binding.searchCard.isVisible = !viperOnly
+        layoutManager?.setHeadersVisible(!viperOnly)
+        if (viperOnly && !binding.searchInput.text.isNullOrEmpty()) {
+            binding.searchInput.setText("")
+        }
+
+        if (classicLayout) {
             hideDeviceProfileCard()
             padForFooter()
         }
-        // The original V4A had one fixed list: no search, no reordering, no
-        // groups. Hide that whole toolbar while the mode is on.
-        binding.searchCard.isVisible = !on
-        // V4A had a single fixed list, so user-made group headings go too
-        layoutManager?.setHeadersVisible(!on)
-        V4aMode.hiddenCardIds.forEach { id ->
-            val container = binding.root.findViewById<View>(id)?.parent as? View
-            if (on) container?.isVisible = false
-            else if (container?.isVisible == false && !deferredCards.any { it.viewId == id })
-                container.isVisible = true
+
+        // A restricted mode may have removed not-yet-built cards from the lazy
+        // queue. Re-add cards that become legal again before making them visible.
+        var requeued = false
+        deferredCardSpecs.forEach { spec ->
+            if (spec.viewId !in hiddenSet &&
+                childFragmentManager.findFragmentById(spec.viewId) == null &&
+                deferredCards.none { it.viewId == spec.viewId }) {
+                deferredCards.add(spec)
+                requeued = true
+            }
         }
-        if (on) deferredCards.removeAll { it.viewId in V4aMode.hiddenCardIds }
+        if (requeued) cardsFinalised = false
+        deferredCards.removeAll { it.viewId in hiddenSet }
+
+        val searchQuery = binding.searchInput.text?.toString().orEmpty()
+        searchableCards.forEach { entry ->
+            val container = binding.root.findViewById<View>(entry.cardId)?.parent as? View
+            if (entry.cardId in hiddenSet) {
+                container?.isVisible = false
+            } else if (searchQuery.isEmpty()) {
+                val userHidden = layoutManager?.isHidden(
+                    resources.getResourceEntryName(entry.cardId)
+                ) == true
+                container?.isVisible = !userHidden
+            }
+        }
+
+        binding.v4aSectionHeader.isVisible =
+            mode != V4aMode.DspMode.JAMESDSP && !classicLayout && searchQuery.isEmpty()
+
+        if (searchQuery.isNotEmpty()) {
+            applyEffectSearch(searchQuery)
+        }
+        if (deferredCards.isNotEmpty()) {
+            scheduleIdlePrefetch()
+        }
     }
 
     /**
@@ -538,14 +585,24 @@ class DspFragment : Fragment(), SharedPreferences.OnSharedPreferenceChangeListen
     }
 
     fun applyLiveprogSlotVisibility(rebuild: Boolean = false) {
-        // In V4A-only mode all Liveprog cards stay hidden regardless of the
-        // configured slots; the slot writes themselves are preserved.
-        if (isAdded && V4aMode.isOn(requireContext())) {
+        if (!isAdded) return
+        val ids = intArrayOf(R.id.card_liveprog2, R.id.card_liveprog3, R.id.card_liveprog4)
+        val mode = V4aMode.currentMode(requireContext())
+
+        // ViPER mode has no Liveprog. Pure JamesDSP keeps the upstream single
+        // Liveprog card but excludes the three additional fork slots.
+        if (mode == V4aMode.DspMode.VIPER) {
             applyV4aVisibility()
             return
         }
-        if (!isAdded) return
-        val ids = intArrayOf(R.id.card_liveprog2, R.id.card_liveprog3, R.id.card_liveprog4)
+        if (mode == V4aMode.DspMode.JAMESDSP) {
+            ids.forEach { id ->
+                (binding.root.findViewById<View>(id)?.parent as? View)?.isVisible = false
+            }
+            deferredCards.removeAll { it.viewId in ids }
+            return
+        }
+
         val prefs = arrayOf(Constants.PREF_LIVEPROG2, Constants.PREF_LIVEPROG3, Constants.PREF_LIVEPROG4)
         val xml = intArrayOf(
             R.xml.dsp_liveprog2_preferences,

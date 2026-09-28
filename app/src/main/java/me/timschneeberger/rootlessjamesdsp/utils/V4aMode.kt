@@ -1,33 +1,115 @@
-﻿package me.timschneeberger.rootlessjamesdsp.utils
+package me.timschneeberger.rootlessjamesdsp.utils
 
 import android.content.Context
 import me.timschneeberger.rootlessjamesdsp.R
 
 /**
- * "ViPER4Android only" mode: restricts the app to the effect set the original
- * V4A shipped, disables everything else (so their engines free their buffers
- * and cost nothing), and lets screens re-skin themselves with V4A naming.
+ * Compatibility wrapper around the app's three DSP modes.
+ *
+ * The project used to expose a single "ViPER4Android only" boolean. Keep that
+ * key readable for existing installs, but make the canonical state explicit:
+ * JamesDSP, ViPER4Android or Hybrid.
  */
 object V4aMode {
     const val KEY = "v4a_only_mode"
+    const val MODE_KEY = "dsp_mode"
+
+    enum class DspMode(val value: String) {
+        HYBRID("hybrid"),
+        JAMESDSP("jamesdsp"),
+        VIPER("viper");
+
+        companion object {
+            fun fromValue(raw: String?): DspMode =
+                entries.firstOrNull { it.value == raw } ?: HYBRID
+        }
+    }
+
+    @Volatile
+    private var cachedMode: DspMode? = null
+
+    fun currentMode(ctx: Context): DspMode {
+        cachedMode?.let { return it }
+
+        val prefs = ctx.getSharedPreferences(Constants.PREF_APP, Context.MODE_PRIVATE)
+        val stored = prefs.getString(MODE_KEY, null)
+        val mode = if (stored != null) {
+            DspMode.fromValue(stored)
+        } else if (prefs.getBoolean(KEY, false)) {
+            DspMode.VIPER
+        } else {
+            DspMode.HYBRID
+        }
+
+        // One-way migration: old installs keep their previous V4A-only choice.
+        // The legacy boolean is still mirrored by setMode() for downgrade safety.
+        if (stored == null) {
+            prefs.edit().putString(MODE_KEY, mode.value).apply()
+        }
+
+        cachedMode = mode
+        return mode
+    }
+
+    /** Existing engine code uses this to select V4A-specific processing rules. */
+    fun isOn(ctx: Context): Boolean = currentMode(ctx) == DspMode.VIPER
+
+    fun invalidate() {
+        cachedMode = null
+    }
+
+    fun setMode(ctx: Context, mode: DspMode) {
+        ctx.getSharedPreferences(Constants.PREF_APP, Context.MODE_PRIVATE)
+            .edit()
+            .putString(MODE_KEY, mode.value)
+            .putBoolean(KEY, mode == DspMode.VIPER)
+            .apply()
+        cachedMode = mode
+
+        when (mode) {
+            DspMode.JAMESDSP -> disableNonJamesEffects(ctx)
+            DspMode.VIPER -> disableNonV4aEffects(ctx)
+            DspMode.HYBRID -> Unit
+        }
+    }
 
     /**
-     * Cached deliberately. This is read from preference row binding, which runs
-     * for every row of every card while scrolling, and MODE_MULTI_PROCESS
-     * re-parses the whole file from disk on each call - the app is single
-     * process, so that cost bought nothing at all.
+     * Effects that were not part of upstream RootlessJamesDSP. JamesDSP mode
+     * keeps the upstream app/engine surface intact and switches every fork-only
+     * effect off so hidden engines do not continue consuming audio resources.
      */
-    @Volatile private var cached: Boolean? = null
+    private fun nonJames(ctx: Context) = listOf(
+        Constants.PREF_BASSEX to R.string.key_bassex_enable,
+        Constants.PREF_SPECTRUMEXT to R.string.key_spectrumext_enable,
+        Constants.PREF_VDYNBASS to R.string.key_vdynbass_enable,
+        Constants.PREF_DIFFSURROUND to R.string.key_diffsurround_enable,
+        Constants.PREF_CLARITY to R.string.key_clarity_enable,
+        Constants.PREF_FIELDSURROUND to R.string.key_fieldsurround_enable,
+        Constants.PREF_AGC to R.string.key_agc_enable,
+        Constants.PREF_HPSURROUND to R.string.key_hpsurround_enable,
+        Constants.PREF_FETCOMP to R.string.key_fetcomp_enable,
+        Constants.PREF_CURE to R.string.key_cure_enable,
+        Constants.PREF_VIPERBASS to R.string.key_viperbass_enable,
+        Constants.PREF_VREVERB to R.string.key_vreverb_enable,
+        Constants.PREF_SPEAKEROPT to R.string.key_speakeropt_enable,
+        Constants.PREF_PITCHSHIFT to R.string.key_pitchshift_enable,
+        Constants.PREF_ECHODELAY to R.string.key_echo_enable,
+        Constants.PREF_MULTIBANDDIST to R.string.key_mbd_enable,
+        Constants.PREF_MAXIMIZER to R.string.key_maxr_enable,
+        Constants.PREF_DYNAMICEQ to R.string.key_dyneq_enable,
+        Constants.PREF_IMAGING to R.string.key_imaging_enable,
+        Constants.PREF_TRANSIENT to R.string.key_transient_enable,
+        Constants.PREF_LOWEND to R.string.key_lowend_enable,
+        Constants.PREF_EXCITER to R.string.key_exciter_enable,
+        Constants.PREF_TAPE to R.string.key_tape_enable,
+        Constants.PREF_VINYL to R.string.key_vinyl_enable,
+        Constants.PREF_BALANCE to R.string.key_balance_enable,
+        Constants.PREF_LIVEPROG2 to R.string.key_liveprog2_enable,
+        Constants.PREF_LIVEPROG3 to R.string.key_liveprog3_enable,
+        Constants.PREF_LIVEPROG4 to R.string.key_liveprog4_enable,
+    )
 
-    fun isOn(ctx: Context): Boolean = cached ?: ctx
-        .getSharedPreferences(Constants.PREF_APP, Context.MODE_PRIVATE)
-        .getBoolean(KEY, false)
-        .also { cached = it }
-
-    /** Called when the setting changes, so the next read picks it up. */
-    fun invalidate() { cached = null }
-
-    /** Effects the original ViPER4Android did NOT have: namespace + enable key. */
+    /** Effects the original ViPER4Android did not have. */
     private fun nonV4a(ctx: Context) = listOf(
         Constants.PREF_COMPANDER to R.string.key_compander_enable,
         Constants.PREF_BASS to R.string.key_bass_enable,
@@ -55,65 +137,91 @@ object V4aMode {
         Constants.PREF_REVERB to R.string.key_reverb_enable,
     )
 
-    /**
-     * Card containers that vanish in V4A mode (matches the list above).
-     *
-     * Both lists are of what to exclude rather than what to keep, which means
-     * anything added to the app later is inside V4A mode until someone
-     * remembers to add it here. Worth knowing when adding an effect: a new card
-     * that is not an original V4A one belongs in both lists, or the mode shows
-     * it and its engine keeps running while the user believes neither.
-     */
-    val hiddenCardIds = intArrayOf(
+    private val viperHiddenCardIds = intArrayOf(
         R.id.card_compressor, R.id.card_bass, R.id.card_bassex,
-        R.id.card_pitchshift, R.id.card_echo, R.id.card_mbd, R.id.card_maxr, R.id.card_dyneq, R.id.card_imaging, R.id.card_transient, R.id.card_lowend, R.id.card_exciter, R.id.card_tape, R.id.card_geq,
-        R.id.card_peq, R.id.card_liveprog, R.id.card_liveprog2,
-        R.id.card_liveprog3, R.id.card_liveprog4, R.id.card_stereowide,
-        R.id.card_crossfeed, R.id.card_reverb
+        R.id.card_pitchshift, R.id.card_echo, R.id.card_mbd, R.id.card_maxr,
+        R.id.card_dyneq, R.id.card_imaging, R.id.card_transient,
+        R.id.card_lowend, R.id.card_exciter, R.id.card_tape, R.id.card_vinyl,
+        R.id.card_balance, R.id.card_geq, R.id.card_peq, R.id.card_liveprog,
+        R.id.card_liveprog2, R.id.card_liveprog3, R.id.card_liveprog4,
+        R.id.card_stereowide, R.id.card_crossfeed, R.id.card_reverb,
     )
 
+    /**
+     * Everything absent from upstream RootlessJamesDSP. This list is purposely
+     * based on the upstream card set rather than names containing "ViPER": the
+     * fork also has non-ViPER studio effects, and pure JamesDSP mode excludes
+     * those too.
+     */
+    private val jamesHiddenCardIds = intArrayOf(
+        R.id.card_bassex, R.id.card_vdynbass, R.id.card_diffsurround,
+        R.id.card_clarity, R.id.card_fieldsurround, R.id.card_hpsurround,
+        R.id.card_fetcomp, R.id.card_cure, R.id.card_viperbass,
+        R.id.card_vreverb, R.id.card_speakeropt, R.id.card_pitchshift,
+        R.id.card_echo, R.id.card_mbd, R.id.card_maxr, R.id.card_dyneq,
+        R.id.card_imaging, R.id.card_transient, R.id.card_lowend,
+        R.id.card_exciter, R.id.card_tape, R.id.card_vinyl, R.id.card_balance,
+        R.id.card_liveprog2, R.id.card_liveprog3, R.id.card_liveprog4,
+        R.id.card_agc, R.id.card_spectrumext,
+    )
+
+    /** Legacy property kept for existing callers; it means V4A-only hidden cards. */
+    val hiddenCardIds: IntArray
+        get() = viperHiddenCardIds
+
+    fun hiddenCardIdsFor(ctx: Context): IntArray = when (currentMode(ctx)) {
+        DspMode.HYBRID -> intArrayOf()
+        DspMode.JAMESDSP -> jamesHiddenCardIds
+        DspMode.VIPER -> viperHiddenCardIds
+    }
 
     /**
-     * The original ViPER4Android processing order, taken from ViPER.cpp in the
-     * ViPERFX_RE decompilation:
-     *
-     *   convolver -> headphone surround (VHE) -> DDC -> spectrum extension ->
-     *   FIR equalizer -> colourful music (field surround) -> differential
-     *   surround -> reverberation -> speaker correction -> playback gain (AGC)
-     *   -> FET compressor -> dynamic system -> ViPER bass -> ViPER clarity ->
-     *   cure -> tube simulator -> analogX -> software limiter
-     *
-     * The limiter is not listed here: the engine always runs the output stage
-     * last, exactly as V4A did. Effects this fork adds are absent because
-     * V4A-only mode disables them anyway.
+     * Original ViPER4Android processing order, taken from ViPER.cpp in the
+     * ViPERFX_RE decompilation. The output limiter remains last in the engine.
      */
     val v4aChainOrder = intArrayOf(
         11, // JDSP_EFX_CONVOLVER
-        21, // JDSP_EFX_HPSURROUND       (VHE)
+        21, // JDSP_EFX_HPSURROUND
         12, // JDSP_EFX_DDC
         22, // JDSP_EFX_SPECTRUMEXT
-        9,  // JDSP_EFX_EQUALIZER        (FIR equalizer)
-        20, // JDSP_EFX_FIELDSURROUND    (colourful music)
+        9,  // JDSP_EFX_EQUALIZER
+        20, // JDSP_EFX_FIELDSURROUND
         4,  // JDSP_EFX_DIFFSURROUND
-        27, // JDSP_EFX_VREVERB          (reverberation)
-        25, // JDSP_EFX_SPEAKEROPT       (speaker correction)
-        24, // JDSP_EFX_AGC              (playback gain)
+        27, // JDSP_EFX_VREVERB
+        25, // JDSP_EFX_SPEAKEROPT
+        24, // JDSP_EFX_AGC
         3,  // JDSP_EFX_FETCOMP
-        6,  // JDSP_EFX_VDYNBASS         (dynamic system)
+        6,  // JDSP_EFX_VDYNBASS
         7,  // JDSP_EFX_VIPERBASS
         23, // JDSP_EFX_CLARITY
         18, // JDSP_EFX_CURE
         0,  // JDSP_EFX_TUBE
     )
 
+    fun disableNonV4aEffects(ctx: Context) = disable(ctx, nonV4a(ctx))
+
+    fun disableNonJamesEffects(ctx: Context) = disable(ctx, nonJames(ctx))
+
     /**
-     * Switches every non-V4A effect off. Each engine frees its buffers on
-     * disable, so this is also what guarantees they take no resources.
+     * Reassert the selected mode before every engine preference sync. This is
+     * what keeps a preset import or backup restore from silently re-enabling an
+     * effect that the active mode promises is absent.
      */
-    fun disableNonV4aEffects(ctx: Context) {
-        nonV4a(ctx).forEach { (namespace, keyRes) ->
-            ctx.getSharedPreferences(namespace, Context.MODE_MULTI_PROCESS)
-                .edit().putBoolean(ctx.getString(keyRes), false).apply()
+    fun enforceCurrentMode(ctx: Context) {
+        when (currentMode(ctx)) {
+            DspMode.JAMESDSP -> disableNonJamesEffects(ctx)
+            DspMode.VIPER -> disableNonV4aEffects(ctx)
+            DspMode.HYBRID -> Unit
+        }
+    }
+
+    private fun disable(ctx: Context, effects: List<Pair<String, Int>>) {
+        effects.forEach { (namespace, keyRes) ->
+            val prefs = ctx.getSharedPreferences(namespace, Context.MODE_MULTI_PROCESS)
+            val key = ctx.getString(keyRes)
+            if (prefs.getBoolean(key, false)) {
+                prefs.edit().putBoolean(key, false).apply()
+            }
         }
     }
 }

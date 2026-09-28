@@ -1,10 +1,13 @@
 <PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
 
-    <me.timschneeberger.rootlessjamesdsp.preference.MaterialSwitchPreference
-        app:key="@string/key_v4a_mode"
-        app:title="@string/v4a_mode_title"
-        app:summary="@string/v4a_mode_summary"
-        app:defaultValue="false"
+    <ListPreference
+        app:key="@string/key_dsp_mode"
+        app:title="@string/dsp_mode_title"
+        app:summary="@string/dsp_mode_summary"
+        app:entries="@array/dsp_modes"
+        app:entryValues="@array/dsp_mode_values"
+        app:defaultValue="hybrid"
+        app:useSimpleSummaryProvider="true"
         app:iconSpaceReserved="false" />
 
     <Preference
