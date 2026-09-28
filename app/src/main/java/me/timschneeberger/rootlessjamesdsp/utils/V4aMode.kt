@@ -202,12 +202,26 @@ object V4aMode {
 
     fun disableNonJamesEffects(ctx: Context) = disable(ctx, nonJames(ctx))
 
+    /**
+     * Reassert the selected mode before every engine preference sync. This is
+     * what keeps a preset import or backup restore from silently re-enabling an
+     * effect that the active mode promises is absent.
+     */
+    fun enforceCurrentMode(ctx: Context) {
+        when (currentMode(ctx)) {
+            DspMode.JAMESDSP -> disableNonJamesEffects(ctx)
+            DspMode.VIPER -> disableNonV4aEffects(ctx)
+            DspMode.HYBRID -> Unit
+        }
+    }
+
     private fun disable(ctx: Context, effects: List<Pair<String, Int>>) {
         effects.forEach { (namespace, keyRes) ->
-            ctx.getSharedPreferences(namespace, Context.MODE_MULTI_PROCESS)
-                .edit()
-                .putBoolean(ctx.getString(keyRes), false)
-                .apply()
+            val prefs = ctx.getSharedPreferences(namespace, Context.MODE_MULTI_PROCESS)
+            val key = ctx.getString(keyRes)
+            if (prefs.getBoolean(key, false)) {
+                prefs.edit().putBoolean(key, false).apply()
+            }
         }
     }
 }
