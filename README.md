@@ -36,7 +36,7 @@ The interface is yours to arrange: **reorder, hide and group the effect cards**,
 
 The **Reverberation** effect offers four rooms — the classic ViPER model plus a smooth studio Plate, a large warm Concert hall, and a natural Room with early reflections — and the output stage adds a **ViPER classic limiter**, a faithful re-creation of the original V4A limiter with the lookahead and transient bite that made it distinctive. The **convolver and DDC libraries** have their own search, custom sorting, hiding and groups, and can pull fresh impulse responses and DDC profiles straight from public repositories, skipping anything you already own.
 
-Prefer the original experience? **ViPER4Android-only mode** narrows the app to the effects V4A shipped, using its naming, its processing order and its limiter, and switches everything else off so it costs nothing. A matching **ViPER4Android classic theme** is available on its own too, if you want the classic look without giving up any of the extras.
+The app now has one explicit **DSP mode** selector. **Hybrid** is the full JamesDSP + ViPER feature set; **JamesDSP** restricts the app and engine to the upstream RootlessJamesDSP toolset; **ViPER4Android** narrows it to the original V4A effect set, naming, processing order and limiter. Restricted modes switch excluded effects off at the engine boundary as well as hiding them in the UI. A matching **ViPER4Android classic theme** remains independent from the selected DSP mode.
 
 ## 📸 Screenshots
 
@@ -107,7 +107,7 @@ Output limiter (with selectable peak / soft-saturation modes), auto-loudness com
 - ~~**Custom effect groups**~~ — create, rename and delete groups, move cards between them, hide what you don't use
 - ~~**More reverb room types**~~ — Plate, Concert hall and Room alongside the classic ViPER model ([#1](https://github.com/alienware377/RootlessViPER4Android/issues/1))
 - ~~**ViPER classic limiter**~~ — a faithful re-creation of V4A's own limiter, lookahead and all
-- ~~**ViPER4Android-only mode**~~ — the original effect set, naming, processing order and limiter, with everything else switched off
+- ~~**JamesDSP / ViPER4Android / Hybrid modes**~~ — one app with an upstream-style JamesDSP toolset, the original V4A effect set/order/limiter, or the full combined chain
 - ~~**ViPER4Android classic theme**~~ — the classic look, available with or without the mode
 - ~~**Library management for Convolver & DDC**~~ — search, sorting, hiding, groups, and downloading more profiles from public repositories
 - ~~**Idle battery fix**~~ — processing stands down when playback is silent, not just when apps release the audio session
@@ -142,7 +142,7 @@ Output limiter (with selectable peak / soft-saturation modes), auto-loudness com
 2. Install and follow the in-app onboarding — it walks you through the permission setup step-by-step.
 3. Play music, open the app, and start flipping switches 🎶
 
-Installs **alongside** the original RootlessJamesDSP as a separate app — keep both or remove the original, your choice.
+The package can still install **alongside** the original RootlessJamesDSP for migration and comparison, but this repository is the canonical combined app; use **JamesDSP** mode when you want the upstream-style effect surface without maintaining a second app.
 
 > ### ⚠️ Upgrading from v2.8.2 or earlier
 > v3.35.0 changes the package name, so Android treats it as a new app: it **installs alongside your existing copy instead of updating it**, and settings do not carry across on their own.
